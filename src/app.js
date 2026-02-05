@@ -44,7 +44,7 @@ app.use(
   cors({
     origin: [
       "http://localhost:3000",
-      "https://domain.ibigdata.in",
+      "https://wbh.ibigdata.in",
       
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
