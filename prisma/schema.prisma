@@ -1,0 +1,468 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Admin {
+  id           String      @id @default(uuid())
+  name         String
+  email        String      @unique
+  password     String
+  role         Role
+  city         String?
+  phone        String?
+  status       AdminStatus @default(active)
+  AddressLine1 String?     @default("")
+  AddressLine2 String?     @default("")
+
+  // Self Relation (creator)
+  createdBy    String?
+  createdByRef Admin?  @relation("CreatedByRelation", fields: [createdBy], references: [id])
+
+  // Self Relation (admins created by this admin)
+  createdAdmins Admin[] @relation("CreatedByRelation")
+
+  assignedCustomers Customer[] @relation("CustomerAssignedTo")
+  createdCustomers  Customer[] @relation("CustomerCreatedBy")
+
+  assignedContact Contact[] @relation("ContactAssignedTo")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum Role {
+  administrator
+  city_admin
+  user
+}
+
+enum AdminStatus {
+  active
+  inactive
+}
+
+model Campaign {
+  id        String    @id @default(uuid())
+  Name      String    @unique
+  Status    Status    @default(Active)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  types     Type[]
+  subTypes  SubType[]
+}
+
+enum Status {
+  Active
+  Inactive
+}
+
+model Type {
+  id     String @id @default(uuid())
+  Name   String @default("")
+  Status Status @default(Active)
+
+  // Relation to Campaign
+  Campaign   Campaign @relation(fields: [campaignId], references: [id])
+  campaignId String
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  subTypes  SubType[]
+}
+
+model SubType {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String   @default("Active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  campaignId String
+  Campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  customerTypeId String
+  CustomerType   Type   @relation(fields: [customerTypeId], references: [id])
+}
+
+model ContactCampaign {
+  id           String        @id @default(uuid())
+  Name         String        @unique
+  Status       Status        @default(Active)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  contactTypes ContactType[]
+}
+
+model ContactType {
+  id        String   @id @default(uuid())
+  Name      String   @default("")
+  Status    Status   @default(Active)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Foreign key: Campaign (Like Mongoose ref)
+  campaignId String
+  Campaign   ContactCampaign @relation(fields: [campaignId], references: [id])
+}
+
+model City {
+  id           String        @id @default(uuid())
+  Name         String
+  Status       String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  locations    Location[]
+  subLocations SubLocation[]
+}
+
+model Location {
+  id        String   @id @default(uuid())
+  Name      String   @default("")
+  Status    String   @default("Active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relation to City
+  cityId       String
+  City         City          @relation(fields: [cityId], references: [id])
+  subLocations SubLocation[]
+}
+
+model SubLocation {
+  id        String   @id @default(uuid())
+  Name      String   @default("")
+  Status    String   @default("Active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relation to City and Location
+  cityId String
+  City   City   @relation(fields: [cityId], references: [id])
+
+  locationId String
+  Location   Location @relation(fields: [locationId], references: [id])
+}
+
+model Facility {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Amenity {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model FunctionalArea {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Industry {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Reference {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Price {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CustomerFields {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Expense {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Income {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model StatusType {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ContactStatusType {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PaymentMethod {
+  id        String   @id @default(uuid())
+  Name      String   @default("")
+  Status    String   @default("Active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Template {
+  id            String   @id @default(uuid())
+  name          String   @unique
+  type          String // email | whatsapp
+  subject       String   @default("")
+  body          String
+  description   String   @default("")
+  whatsappImage Json?    @default("[]")
+  createdBy     String   @default("system")
+  status        String   @default("Active") // Active | Inactive
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model IncomeMarketing {
+  id             String   @id @default(uuid())
+  Date           String?
+  PartyName      String?
+  User           String?
+  Income         String?
+  Amount         String?
+  DueAmount      String?
+  PaymentMethode String?
+  Status         String   @default("Active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model ExpenseMarketing {
+  id             String   @id @default(uuid())
+  Date           String?
+  PartyName      String?
+  User           String?
+  Expense        String?
+  Amount         String?
+  DueAmount      String?
+  PaymentMethode String?
+  Status         String   @default("Active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Task {
+  id          String   @id @default(uuid())
+  date        String?
+  Time        String?
+  Description String?
+  User        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Schedule {
+  id          String   @id @default(uuid())
+  date        String?
+  Time        String?
+  Description String?
+  User        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model CompanyProject {
+  id            String  @id @default(uuid())
+  ProjectName   String
+  ProjectType   String? @default("")
+  ProjectStatus String? @default("")
+
+  City        String? @default("")
+  Location    String? @default("")
+  Area        String? @default("")
+  Range       String? @default("")
+  Adderess    String? @default("")
+  Facillities String? @default("")
+  Amenities   String? @default("")
+
+  Description String? @default("")
+  Video       String? @default("")
+  GoogleMap   String? @default("")
+
+  CustomerImage Json? @default("[]") // JSON array of strings
+  SitePlan      Json? @default("[]") // JSON array of strings
+
+  CreatedBy String? // Admin ID
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BuilderSlider {
+  id        String   @id @default(uuid())
+  Image     Json?    @default("[]") // stores ["url1","url2"]
+  Status    String   @default("Active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Customer {
+  id              String  @id @default(uuid())
+  Campaign        String? @default("")
+  CustomerType    String? @default("")
+  CustomerSubType String? @default("")
+  customerName    String
+  ContactNumber   String
+  City            String? @default("")
+  Location        String? @default("")
+  SubLocation     String? @default("")
+  Area            String? @default("")
+  Adderess        String? @default("")
+  Email           String? @default("")
+  Facillities     String? @default("")
+  ReferenceId     String? @default("")
+  CustomerId      String? @default("")
+  CustomerDate    String? @default("")
+  CustomerYear    String? @default("")
+  Other           String? @default("")
+  Description     String? @db.LongText
+  Video           String? @default("")
+  Verified        String? @default("")
+  GoogleMap       String? @default("")
+  URL             String? @default("")
+  Price           String? @default("")
+  CustomerFields  Json?   @default("{}")
+  CustomerImage   Json?   @default("[]")
+  SitePlan        Json?   @default("[]")
+  isFavourite     Boolean @default(false)
+  isChecked       Boolean @default(false)
+
+  // -------------------------------
+  // RELATIONS with Admin
+  // -------------------------------
+
+  // Assigned To Admin
+  AssignToId String?
+  AssignTo   Admin?  @relation("CustomerAssignedTo", fields: [AssignToId], references: [id], map: "fk_customer_assignto")
+
+  // Created By Admin
+  CreatedById String?
+  CreatedBy   Admin?  @relation("CustomerCreatedBy", fields: [CreatedById], references: [id], map: "fk_customer_createdby")
+
+  isImported Boolean    @default(false)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime
+  followups  Followup[]
+}
+
+model Followup {
+  id               String  @id @default(uuid())
+  customerId       String
+  StartDate        String?
+  StatusType       String?
+  FollowupNextDate String?
+  Description      String?
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  contactId String?
+}
+
+model Contact {
+  id                    String  @id @default(uuid())
+  Campaign              String?
+  Range                 String?
+  ContactNo             String? @default("")
+  Location              String?
+  ContactType           String?
+  Name                  String  @default("")
+  City                  String?
+  Address               String? @default("")
+  ContactIndustry       String? @default("")
+  ContactFunctionalArea String? @default("")
+  ReferenceId           String? @default("")
+  Notes                 String? @default("")
+  Facilities            String? @default("")
+  date                  String? @default("")
+  Email                 String? @default("")
+  CompanyName           String? @default("")
+  Website               String? @default("")
+  Status                String? @default("")
+  Qualifications        String? @default("")
+  isFavourite           Boolean @default(false)
+  isImported            Boolean @default(false)
+
+  AssignToId String?
+  AssignTo   Admin?  @relation("ContactAssignedTo", fields: [AssignToId], references: [id], map: "fk_contact_assignto")
+
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  followups        Followup[]
+  contactFollowups ContactFollowup[]
+}
+
+model ContactFollowup {
+  id               String  @id @default(uuid())
+  contactId        String
+  StartDate        String?
+  StatusType       String?
+  FollowupNextDate String?
+  Description      String?
+
+  contact Contact @relation(fields: [contactId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model RequestUser {
+  id       String  @id @default(uuid())
+  name     String
+  email    String
+  password String
+  phone    String?
+}
+
+model CustomerFieldLabel {
+  id           Int    @id @default(autoincrement())
+  fieldKey     String @unique // customerName, contactNumber
+  displayLabel String // Student Name, Mobile Number
+}
