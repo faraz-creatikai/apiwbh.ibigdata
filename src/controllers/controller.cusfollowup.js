@@ -121,7 +121,7 @@ export const getFollowups = async (req, res, next) => {
 
     const {
       page = 1,
-      limit = 10,
+      limit, // ✅ no default
       keyword = "",
       StatusType,
       Campaign,
@@ -132,9 +132,11 @@ export const getFollowups = async (req, res, next) => {
       User,
     } = req.query;
 
-    const pageNum = Math.max(1, parseInt(page));
-    const perPage = Math.max(1, parseInt(limit));
-    const skip = (pageNum - 1) * perPage;
+    const pageNum = Math.max(1, parseInt(page, 10));
+
+    const isPaginated = limit !== undefined;
+    const perPage = isPaginated ? Math.max(1, parseInt(limit, 10)) : null;
+    const skip = isPaginated ? (pageNum - 1) * perPage : undefined;
 
     // -------------------------
     // FOLLOWUP FILTER
@@ -143,11 +145,10 @@ export const getFollowups = async (req, res, next) => {
     if (StatusType) whereFollowup.StatusType = StatusType.trim();
 
     // -------------------------
-    // CUSTOMER FILTER (inside followup)
+    // CUSTOMER FILTER
     // -------------------------
     const customerFilter = {};
 
-    // Query filters
     if (Campaign) customerFilter.Campaign = { contains: Campaign.trim() };
     if (PropertyType)
       customerFilter.CustomerType = { contains: PropertyType.trim() };
@@ -156,17 +157,16 @@ export const getFollowups = async (req, res, next) => {
     if (City) customerFilter.City = { contains: City.trim() };
     if (Location) customerFilter.Location = { contains: Location.trim() };
 
-    // Filter by AssignTo name
     if (User) {
       customerFilter.AssignTo = {
         name: { contains: User.trim() },
       };
     }
+
     if (admin.role === "user") {
-      customerFilter.AssignTo = { id: admin.id }; // <── FIX
+      customerFilter.AssignTo = { id: admin.id };
     }
 
-    // Keyword filter
     if (keyword) {
       const kw = keyword.trim();
       customerFilter.OR = [
@@ -178,28 +178,22 @@ export const getFollowups = async (req, res, next) => {
       ];
     }
 
+    const where = {
+      ...whereFollowup,
+      customer: Object.keys(customerFilter).length
+        ? customerFilter
+        : undefined,
+    };
+
     // -------------------------
-    // FETCH FOLLOWUPS WITH CUSTOMER FILTERS
+    // FETCH DATA
     // -------------------------
     const [total, followups] = await Promise.all([
-      prisma.followup.count({
-        where: {
-          ...whereFollowup,
-          customer: Object.keys(customerFilter).length
-            ? customerFilter
-            : undefined,
-        },
-      }),
+      prisma.followup.count({ where }),
       prisma.followup.findMany({
-        where: {
-          ...whereFollowup,
-          customer: Object.keys(customerFilter).length
-            ? customerFilter
-            : undefined,
-        },
+        where,
         include: { customer: { include: { AssignTo: true } } },
-        skip,
-        take: perPage,
+        ...(isPaginated && { skip, take: perPage }), // ✅ CONDITIONAL
         orderBy: { createdAt: "desc" },
       }),
     ]);
@@ -210,8 +204,8 @@ export const getFollowups = async (req, res, next) => {
     res.status(200).json({
       success: true,
       total,
-      currentPage: pageNum,
-      totalPages: Math.ceil(total / perPage),
+      currentPage: isPaginated ? pageNum : 1,
+      totalPages: isPaginated ? Math.ceil(total / perPage) : 1,
       data: followups.map(transformFollowup),
     });
   } catch (error) {
