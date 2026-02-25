@@ -247,6 +247,7 @@ export const getCustomer = async (req, res, next) => {
       SearchIn,
       ReferenceId,
       Price,
+      isFavourite,
       StartDate,
       EndDate,
       Limit,
@@ -265,9 +266,14 @@ export const getCustomer = async (req, res, next) => {
     // --------------------------------------------
     // ROLE-BASED FILTERS
     // --------------------------------------------
-    if (admin.role === "city_admin") {
-      AND.push({ City: { contains: admin.city } });
-    } else if (admin.role === "user") {
+   if (admin.role === "city_admin") {
+  AND.push({
+    OR: [
+      { AssignToId: admin.id },
+      { CreatedById: admin.id }
+    ]
+  });
+} else if (admin.role === "user") {
       AND.push({ AssignToId: admin.id || admin._id });
     }
 
@@ -290,6 +296,11 @@ export const getCustomer = async (req, res, next) => {
     if (ContactNumber) AND.push({ ContactNumber: { contains: ContactNumber.trim() } });
     if (ReferenceId) AND.push({ ReferenceId: { contains: ReferenceId.trim() } });
     if (Price) AND.push({ Price: { contains: Price.trim() } });
+    if (typeof isFavourite !== "undefined") {
+  AND.push({
+    isFavourite: isFavourite === "true"
+  });
+}
 
     // --------------------------------------------
     // KEYWORD SEARCH
@@ -393,44 +404,61 @@ export const getCustomer = async (req, res, next) => {
     }
 
 
-    // --------------------------------------------
-    // POST-FETCH FILTER BY CustomerDate (dd-mm-yyyy) ONLY IF BOTH START AND END PROVIDED
-    // --------------------------------------------
-    if (StartDate && EndDate) {
-      const [sdDay, sdMonth, sdYear] = StartDate.split("-").map(Number);
-      const [edDay, edMonth, edYear] = EndDate.split("-").map(Number);
+// --------------------------------------------
+// POST-FETCH FILTER + SORT BY CustomerDate
+// ONLY IF BOTH START AND END PROVIDED
+// --------------------------------------------
+if (StartDate && EndDate) {
 
-      const start = new Date(sdYear, sdMonth - 1, sdDay, 0, 0, 0, 0);
-      const end = new Date(edYear, edMonth - 1, edDay, 23, 59, 59, 999);
-      if (!isNaN(start.getTime()) && !isNaN(end.getTime())) {
-        customers = customers.filter((c) => {
-          if (c.CustomerDate && c.CustomerDate.trim() !== "") {
-            const parts = c.CustomerDate.split("-");
-            let custDate;
+  const parseDMY = (str) => {
+    if (!str) return null;
 
-            if (parts.length === 3) {
-              // Check which format it is
-              if (parts[0].length === 4) {
-                // yyyy-mm-dd
-                const [yyyy, mm, dd] = parts.map(Number);
-                custDate = new Date(yyyy, mm - 1, dd);
-              } else {
-                // dd-mm-yyyy
-                const [dd, mm, yyyy] = parts.map(Number);
-                custDate = new Date(yyyy, mm - 1, dd);
-              }
-            } else {
-              custDate = new Date(c.CustomerDate);
-            }
+    const parts = str.split("-");
+    if (parts.length !== 3) return null;
 
-            return !isNaN(custDate.getTime()) && custDate >= start && custDate <= end;
-          }
+    let day, month, year;
 
-          // If CustomerDate is empty, do NOT include
-          return false;
-        });
-      }
+    // yyyy-mm-dd
+    if (parts[0].length === 4) {
+      [year, month, day] = parts.map(Number);
+    } 
+    // dd-mm-yyyy
+    else {
+      [day, month, year] = parts.map(Number);
     }
+
+    const d = new Date(year, month - 1, day);
+    d.setHours(0, 0, 0, 0); // 🔥 normalize time
+
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const start = parseDMY(StartDate);
+  const end = parseDMY(EndDate);
+
+  if (start && end) {
+
+    end.setHours(23, 59, 59, 999); // include full end day
+
+    // 1️⃣ FILTER FIRST
+    customers = customers.filter((c) => {
+      const d = parseDMY(c.CustomerDate);
+      return d && d >= start && d <= end;
+    });
+
+    // 2️⃣ DEDUPLICATE BEFORE SORT (important)
+    if (!ContactNumber) {
+      customers = deduplicateByContact(customers);
+    }
+
+    // 3️⃣ STRICT ASC SORT (24 → 25 → 26 → 27 → 28)
+    customers.sort((a, b) => {
+      const aTime = parseDMY(a.CustomerDate)?.getTime() || 0;
+      const bTime = parseDMY(b.CustomerDate)?.getTime() || 0;
+      return aTime - bTime;
+    });
+  }
+}
 
 
 
@@ -1089,7 +1117,7 @@ export const updateCustomer = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: "Customer updated successfully",
-      data: await transformCustomer(updated),
+      data: await transformGetCustomer(updated),
     });
   } catch (error) {
     next(new ApiError(500, error.message));
@@ -1142,56 +1170,103 @@ export const deleteCustomer = async (req, res, next) => {
 };
 
 // ASSIGN CUSTOMERS
+// ASSIGN CUSTOMERS (ID or Campaign Based)
 export const assignCustomer = async (req, res, next) => {
   try {
-    const { customerIds = [], assignToId } = req.body;
+    const { customerIds = [], assignToId, campaign } = req.body;
     const admin = req.admin;
 
-    if (!Array.isArray(customerIds) || customerIds.length === 0 || !assignToId)
-      return next(
-        new ApiError(400, "customerIds (array) and assignToId are required")
-      );
+    if (!assignToId)
+      return next(new ApiError(400, "assignToId is required"));
 
     const assignToAdmin = await prisma.admin.findUnique({
       where: { id: assignToId },
     });
-    if (!assignToAdmin) return next(new ApiError(404, "Admin/User not found"));
+
+    if (!assignToAdmin)
+      return next(new ApiError(404, "Admin/User not found"));
+
+    // ------------------------------------------------
+    // 🔥 RESTRICTION: USER can only get selected IDs
+    // ------------------------------------------------
+    if (assignToAdmin.role === "user") {
+      if (!customerIds.length || campaign) {
+        return next(
+          new ApiError(
+            403,
+            "You can only assign selected customers to a user"
+          )
+        );
+      }
+    }
+
+    // ------------------------------------------------
+    // BUILD FILTER
+    // ------------------------------------------------
+    let whereCondition = {};
+
+    if (customerIds.length > 0) {
+      whereCondition.id = { in: customerIds };
+    }
+
+    if (campaign) {
+      whereCondition.Campaign = campaign;
+    }
+
+    if (customerIds.length === 0 && !campaign)
+      return next(
+        new ApiError(400, "Provide customerIds or campaign")
+      );
 
     const customers = await prisma.customer.findMany({
-      where: { id: { in: customerIds } },
+      where: whereCondition,
     });
+
     if (customers.length === 0)
       return next(new ApiError(404, "No valid customers found"));
 
+    // ------------------------------------------------
+    // ROLE VALIDATION (Logged-in Admin Rules)
+    // ------------------------------------------------
     if (admin.role === "city_admin") {
-      const invalid = customers.filter((c) => c.City !== admin.city);
+      const invalid = customers.filter(
+        (c) => c.City !== admin.city
+      );
+
       if (invalid.length > 0)
         return next(
           new ApiError(403, "You can only assign customers in your city")
         );
+
       if (assignToAdmin.city !== admin.city)
         return next(
           new ApiError(403, "You can only assign to users in your city")
         );
-    } else if (admin.role === "user") {
+    } 
+    else if (admin.role === "user") {
       return next(
         new ApiError(403, "Users are not allowed to assign customers")
       );
     }
 
+    // ------------------------------------------------
+    // UPDATE
+    // ------------------------------------------------
     await prisma.customer.updateMany({
-      where: { id: { in: customerIds } },
+      where: whereCondition,
       data: { AssignToId: assignToId },
     });
 
     const updated = await prisma.customer.findMany({
-      where: { id: { in: customerIds } },
+      where: whereCondition,
     });
+
     res.status(200).json({
       success: true,
       message: `Assigned ${updated.length} customers successfully`,
       data: await Promise.all(updated.map(transformGetCustomer)),
     });
+
   } catch (error) {
     next(new ApiError(500, error.message));
   }

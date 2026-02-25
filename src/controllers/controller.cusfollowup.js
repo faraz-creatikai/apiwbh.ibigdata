@@ -121,7 +121,7 @@ export const getFollowups = async (req, res, next) => {
 
     const {
       page = 1,
-      limit, // ✅ no default
+      limit, 
       keyword = "",
       StatusType,
       Campaign,

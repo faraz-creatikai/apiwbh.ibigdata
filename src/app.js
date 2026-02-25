@@ -37,6 +37,7 @@ import sublocationRoutes from "./routes/route.sublocation.js";
 import priceRoutes from "./routes/route.price.js";
 import customerFieldsRoutes from "./routes/route.customerFields.js";
 import customerFieldLabelRoutes from "./routes/route.customerFieldLabel.js";
+import { errorHandler } from "./middlewares/errorHandler.js";
 const app = express();
 app.use(cookieParser());
 
@@ -90,6 +91,7 @@ app.use("/api/contact", contactRoutes);
 app.use("/api/con/follow/add", confollowaddRoutes);
 app.use("/api/v1/messages", messageRoutes);
 app.use("/api/customerfieldlabels",customerFieldLabelRoutes)
+app.use(errorHandler);
 
 
 export default app;
