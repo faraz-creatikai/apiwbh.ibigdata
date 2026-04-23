@@ -19,6 +19,13 @@ model Admin {
   AddressLine1 String?     @default("")
   AddressLine2 String?     @default("")
 
+  company        String?
+  clientId       String?
+  campaign       String?
+  experience     String?
+  specialization String?
+  AdminImage     Json?   @default("[]")
+
   // Self Relation (creator)
   createdBy    String?
   createdByRef Admin?  @relation("CreatedByRelation", fields: [createdBy], references: [id])
@@ -27,7 +34,10 @@ model Admin {
   createdAdmins Admin[] @relation("CreatedByRelation")
 
   assignedCustomers Customer[] @relation("CustomerAssignedTo")
+  assignedAIAgents  AIAgent[]  @relation("AIAgentAssignedTo")
   createdCustomers  Customer[] @relation("CustomerCreatedBy")
+  createdFollowups  Followup[] @relation("FollowupCreatedBy")
+  createdPropertys  Property[] @relation("PropertyCreatedBy")
 
   assignedContact Contact[] @relation("ContactAssignedTo")
 
@@ -37,6 +47,7 @@ model Admin {
 
 enum Role {
   administrator
+  client_admin
   city_admin
   user
 }
@@ -197,6 +208,14 @@ model Price {
   updatedAt DateTime @updatedAt
 }
 
+model LeadType {
+  id        String   @id @default(uuid())
+  Name      String
+  Status    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model CustomerFields {
   id        String   @id @default(uuid())
   Name      String
@@ -346,6 +365,7 @@ model Customer {
   Campaign        String? @default("")
   CustomerType    String? @default("")
   CustomerSubType String? @default("")
+  LeadType        String? @default("")
   customerName    String
   ContactNumber   String
   City            String? @default("")
@@ -357,6 +377,7 @@ model Customer {
   Facillities     String? @default("")
   ReferenceId     String? @default("")
   CustomerId      String? @default("")
+  ClientId        String? @default("")
   CustomerDate    String? @default("")
   CustomerYear    String? @default("")
   Other           String? @default("")
@@ -366,19 +387,21 @@ model Customer {
   GoogleMap       String? @default("")
   URL             String? @default("")
   Price           String? @default("")
+  PriceNumber     Int?
   CustomerFields  Json?   @default("{}")
   CustomerImage   Json?   @default("[]")
   SitePlan        Json?   @default("[]")
   isFavourite     Boolean @default(false)
   isChecked       Boolean @default(false)
+  LeadTemperature String? @default("cold")
 
   // -------------------------------
   // RELATIONS with Admin
   // -------------------------------
 
   // Assigned To Admin
-  AssignToId String?
-  AssignTo   Admin?  @relation("CustomerAssignedTo", fields: [AssignToId], references: [id], map: "fk_customer_assignto")
+
+  AssignTo Admin[] @relation("CustomerAssignedTo")
 
   // Created By Admin
   CreatedById String?
@@ -388,6 +411,14 @@ model Customer {
   createdAt  DateTime   @default(now())
   updatedAt  DateTime
   followups  Followup[]
+  callLogs   CallLog[]
+
+  // INDEXES (put here at bottom)
+  @@index([ContactNumber])
+  @@index([createdAt])
+  @@index([Campaign])
+  @@index([City])
+  @@index([ClientId])
 }
 
 model Followup {
@@ -398,7 +429,10 @@ model Followup {
   FollowupNextDate String?
   Description      String?
 
-  customer Customer @relation(fields: [customerId], references: [id])
+  customer    Customer @relation(fields: [customerId], references: [id])
+  // Created By Admin
+  CreatedById String?
+  CreatedBy   Admin?   @relation("FollowupCreatedBy", fields: [CreatedById], references: [id], map: "fk_followup_createdby")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -418,6 +452,8 @@ model Contact {
   Address               String? @default("")
   ContactIndustry       String? @default("")
   ContactFunctionalArea String? @default("")
+  ContactId             String? @default("")
+  ClientId              String? @default("")
   ReferenceId           String? @default("")
   Notes                 String? @default("")
   Facilities            String? @default("")
@@ -454,15 +490,235 @@ model ContactFollowup {
 }
 
 model RequestUser {
-  id       String  @id @default(uuid())
-  name     String
-  email    String
-  password String
-  phone    String?
+  id             String  @id @default(uuid())
+  name           String
+  email          String
+  password       String
+  phone          String?
+  role           String?
+  company        String?
+  specialization String?
+  city           String?
+  experience     String?
+  image          Json?   @default("[]")
 }
 
 model CustomerFieldLabel {
   id           Int    @id @default(autoincrement())
   fieldKey     String @unique // customerName, contactNumber
   displayLabel String // Student Name, Mobile Number
+}
+
+model AIAgent {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  type        String
+  status      Status  @default(Active)
+
+  campaign      String?
+  targetSegment String?
+  capability    String?
+
+  AssignTo Admin[] @relation("AIAgentAssignedTo")
+
+  createdAt DateTime @default(now())
+}
+
+model CallLog {
+  id String @id @default(uuid())
+
+  // relation
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  // Basic Call Info
+  participantIdentity String  @unique
+  agentId             String? // use_agent_id
+  organizationId      String?
+
+  calledTo        String?
+  normalizedPhone String? // last 10 digits for matching
+
+  callDirection String? // inbound / outbound
+  callStatus    String? // Answered / Not Answered
+  callDuration  String? // in seconds
+
+  startTime  DateTime?
+  endTime    DateTime?
+  calledTime DateTime?
+
+  // Media
+  recordingUrl String?
+
+  //AI Outputs
+  transcript String? @db.LongText
+  summary    String? @db.LongText
+  sentiment  String?
+
+  //Extracted Structured Fields (VERY IMPORTANT)
+  customerName       String?
+  propertyType       String?
+  location           String?
+  budget             String?
+  budgetRange        String?
+  useCase            String? // personal / investment
+  siteVisitScheduled Boolean?
+
+  // Costing
+  totalCallCost String?
+  telcoPricing  String?
+  agentCost     String?
+
+  // Raw JSON (backup)
+  rawJson Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([calledTo])
+  @@index([normalizedPhone])
+  @@index([customerId])
+}
+
+model Property {
+  id              String  @id @default(uuid())
+  Campaign        String? @default("")
+  PropertyType    String? @default("")
+  PropertySubType String? @default("")
+  propertyName    String
+  ContactNumber   String
+  City            String? @default("")
+  Location        String? @default("")
+  SubLocation     String? @default("")
+  Area            String? @default("")
+  Adderess        String? @default("")
+  Email           String? @default("")
+  Facillities     Json?   @default("{}")
+  ReferenceId     String? @default("")
+  PropertyId      String? @default("")
+  ClientId        String? @default("")
+  PropertyDate    String? @default("")
+  PropertyYear    String? @default("")
+  Other           String? @default("")
+  Description     String? @db.LongText
+  Video           String? @default("")
+  Verified        String? @default("")
+  GoogleMap       String? @default("")
+  URL             String? @default("")
+  Price           Float?  @default(0)
+  Status          String? @default("")
+  Features        Json?   @default("[]")
+  PropertyImage   Json?   @default("[]")
+  AgentImage      Json?   @default("[]")
+  AgentInfo       Json?   @default("{}")
+  isFavourite     Boolean @default(false)
+  isChecked       Boolean @default(false)
+
+  // -------------------------------
+  // RELATIONS with Admin
+  // -------------------------------
+
+  // Created By Admin
+  CreatedById String?
+  CreatedBy   Admin?  @relation("PropertyCreatedBy", fields: [CreatedById], references: [id], map: "fk_property_createdby")
+
+  isImported Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime
+}
+
+model FacebookPost {
+  id String @id @default(cuid())
+
+  postId  String? @unique
+  groupId String?
+
+  title String?
+  text  String  @db.LongText
+
+  url          String? @unique
+  externalLink String?
+
+  author   String?
+  authorId String?
+
+  likes    Int @default(0)
+  comments Int @default(0)
+  shares   Int @default(0)
+
+  engagementScore Int @default(0)
+
+  media Json? // array of image/video URLs
+
+  hasMedia Boolean @default(false)
+  isVideo  Boolean @default(false)
+
+  createdAt DateTime?
+  timestamp BigInt?
+
+  scrapedAt DateTime @default(now())
+
+  source String @default("facebook")
+
+  @@index([groupId])
+  @@index([engagementScore])
+  @@index([createdAt])
+}
+
+model InstagramPost {
+  id String @id @default(cuid())
+
+  postId  String? @unique
+  groupId String?
+
+  title String?
+  text  String  @db.LongText
+
+  url          String? @unique
+  externalLink String?
+
+  author   String?
+  authorId String?
+
+  likes    Int @default(0)
+  comments Int @default(0)
+  shares   Int @default(0)
+
+  engagementScore Int @default(0)
+
+  media Json? // array of image/video URLs
+
+  hasMedia Boolean @default(false)
+  isVideo  Boolean @default(false)
+
+  createdAt DateTime?
+  timestamp BigInt?
+
+  scrapedAt DateTime @default(now())
+
+  source String @default("instagram")
+
+  @@index([groupId])
+  @@index([engagementScore])
+  @@index([createdAt])
+}
+
+// Simple. No engagement noise. url is unique to prevent duplicate saves.
+
+model MinedLead {
+  id          String    @id @default(cuid())
+  source      String // 'reddit' | 'facebook' | 'instagram'
+  author      String? // display name / username
+  authorId    String? // platform UID (FB authorId, Reddit u/handle)
+  title       String?   @db.VarChar(512)
+  content     String    @db.Text // post body / caption
+  url         String    @unique // deduplication key
+  postContext String? // subreddit name, FB page name, IG hashtag, etc.
+  postedAt    DateTime? // original post timestamp if available
+  savedAt     DateTime  @default(now())
+
+  @@index([source])
+  @@index([savedAt])
+  @@map("mined_leads")
 }

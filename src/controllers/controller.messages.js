@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { sendEmail } from "../config/mailer.js";
 import { sendWhatsApp } from "../config/twilio.js";
 import ApiError from "../utils/ApiError.js";
+import { makeCall } from "../config/exotel.js";
 
 const prisma = new PrismaClient();
 
@@ -176,3 +177,171 @@ export const sendWhatsAppByTemplate = async (req, res, next) => {
     next(new ApiError(500, err.message));
   }
 };
+
+
+export const callCustomer = async (req,res,next) =>{
+  try{
+    const { customerNumber }=req.body;
+
+    if(!customerNumber){
+      res.status(400).json({
+        success:false,
+        message:"please provide customer number"
+      })
+      return;
+    }
+    const response = await makeCall(customerNumber);
+
+    console.log(" making call to customer ", response);
+    res.status(200).json({
+      success:true,
+      call: response
+    })
+  }
+  catch(err){
+     next(new ApiError(500, err.message));
+  }
+}
+
+export const sendWhatsAppMessage = async (req, res, next) => {
+  try {
+    const { templateId, customerIds = [] } = req.body;
+
+    if (!templateId) {
+      return next(new ApiError(400, "templateId is required"));
+    }
+
+    if (!customerIds.length) {
+      return next(new ApiError(400, "customerIds are required"));
+    }
+
+    // 1. Get template
+    const template = await prisma.template.findUnique({
+      where: { id: templateId },
+    });
+
+    if (!template) {
+      return next(new ApiError(404, "Template not found"));
+    }
+
+    if (template.type !== "whatsapp") {
+      return next(new ApiError(400, "Template type must be 'whatsapp'"));
+    }
+
+    // 2. Get customers
+    const customers = await prisma.customer.findMany({
+      where: {
+        id: { in: customerIds },
+      },
+    });
+
+    if (!customers.length) {
+      return next(new ApiError(404, "No customers found"));
+    }
+
+    const results = [];
+
+    // 3. Loop customers (with delay to avoid rate limit)
+    for (const c of customers) {
+      try {
+        const phone = c.ContactNumber || "";
+
+        if (!phone) {
+          results.push({
+            id: c.id,
+            name: c.customerName,
+            status: "skipped_no_phone",
+          });
+          continue;
+        }
+
+        const formattedPhone = phone.startsWith("+")
+          ? phone
+          : `${process.env.DEFAULT_COUNTRY_CODE || "91"}${phone}`;
+
+        // Replace placeholders
+        const message = replacePlaceholders(template.body, c);
+
+        // Get first image (if exists)
+        const imageUrl = template.whatsappImage?.[0] || null;
+
+        // Build payload
+        let payload;
+
+        if (imageUrl) {
+          payload = {
+            messaging_product: "whatsapp",
+            to: formattedPhone,
+            type: "image",
+            image: {
+              link: imageUrl,
+              caption: message,
+            },
+          };
+        } else {
+          payload = {
+            messaging_product: "whatsapp",
+            to: formattedPhone,
+            type: "text",
+            text: {
+              body: message,
+            },
+          };
+        }
+
+        const url = `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`;
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          results.push({
+            id: c.id,
+            phone: formattedPhone,
+            status: "failed",
+            error: data,
+          });
+          continue;
+        }
+
+        results.push({
+          id: c.id,
+          phone: formattedPhone,
+          status: "sent",
+          messageId: data?.messages?.[0]?.id || null,
+        });
+
+      } catch (err) {
+        results.push({
+          id: c.id,
+          name: c.customerName,
+          status: "failed",
+          error: err.message,
+        });
+      }
+
+      // ⛔ small delay to avoid rate limits
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    res.status(200).json({
+      success: true,
+      sent: results.filter((r) => r.status === "sent").length,
+      failed: results.filter((r) => r.status === "failed").length,
+      results,
+    });
+
+  } catch (err) {
+    next(new ApiError(500, err.message));
+  }
+};
+
+

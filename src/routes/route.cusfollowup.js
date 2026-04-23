@@ -7,13 +7,20 @@ import {
   getFollowupById,
   updateFollowup,
   deleteFollowupsByCustomer,
+  createFollowupByAI,
 } from "../controllers/controller.cusfollowup.js";
 import { protectRoute } from "../middlewares/auth.js";
 
 const followupRoutes = express.Router();
 
+followupRoutes.use(protectRoute)
+
+followupRoutes.post("/aifollowup", createFollowupByAI);
+
+
 // Create follow-up for a specific customer
 followupRoutes.post("/:customerId", createFollowup);
+
 
 // Get all follow-ups with pagination
 followupRoutes.get("/",protectRoute, getFollowups);

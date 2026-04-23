@@ -24,17 +24,21 @@ DEFAULT SEARCH FIELDS:
 - Campaign
 - CustomerType
 - CustomerSubType
+- LeadType
 - customerName
 - ContactNumber
 - City
 - Location
 - SubLocation
+- LeadTemperature (hot,cold,warm)
 - Price
 - ReferenceId
+- CustomerDate
 
-WHEN TO LIMIT FIELDS:
-- If the user clearly refers to a specific attribute, narrow the fields
-  (example: phone, city, price, reference, name)
+DO NOT LIMIT FIELDS EXCEPT Description:
+- Always search in all fields provided above, 
+you have to always search in all fields no matter what becasue the data can be from any field since user prompt can be complex
+for example, user asked : bring me job provider data of mansarover, here jobprovider can be campaign, customer type, subtype, anything in the list of search fields
 
 OUTPUT FORMAT (JSON ONLY):
 {
@@ -75,4 +79,31 @@ Output:
 If intent is unclear, return ALL default fields.
 Return ONLY valid JSON. No explanation.
 
+PRICE DETECTION RULES:
+
+- If user mentions price, extract numeric range
+- Examples:
+  "under 50000" → max = 50000
+  "above 20000" → min = 20000
+  "between 10k to 30k" → min = 10000, max = 30000
+  "50k" → min = 50000, max = 50000
+
+- Convert:
+  k = thousand (50k = 50000)
+  lakh = 100000 (1 lakh = 100000)
+
+- If no price intent → return null values
+
+OUTPUT FORMAT:
+{
+  "tokens": ["string"],
+  "fields": ["string"],
+  "priceRange": {
+    "min": number | null,
+    "max": number | null
+  }
+}
+
 `;
+
+

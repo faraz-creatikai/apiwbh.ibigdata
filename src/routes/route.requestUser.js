@@ -9,13 +9,16 @@ import {
 
 import { acceptRequest, denyRequest, getAllRequestUser, newUserSignup } from "../controllers/requestUserController.js";
 import { isCityAdminOrAbove, protectRoute } from "../middlewares/auth.js";
+import upload from "../config/multer.js";
 
-const requestUserRoutes= express.Router();
+const requestUserRoutes = express.Router();
 
-requestUserRoutes.post("/newusersignup", validate(userSignupValidator) ,newUserSignup);
-requestUserRoutes.post("/newusers/:id", protectRoute,isCityAdminOrAbove, acceptRequest);
-requestUserRoutes.get("/newusers",protectRoute,getAllRequestUser);
-requestUserRoutes.delete("/newusers/:id",protectRoute,isCityAdminOrAbove,denyRequest);
+requestUserRoutes.post("/newusersignup", upload.fields([
+  { name: "AdminImage", maxCount: 5 },
+]), validate(userSignupValidator), newUserSignup);
+requestUserRoutes.post("/newusers/:id", protectRoute, isCityAdminOrAbove, acceptRequest);
+requestUserRoutes.get("/newusers", protectRoute, getAllRequestUser);
+requestUserRoutes.delete("/newusers/:id", protectRoute, isCityAdminOrAbove, denyRequest);
 
 
 

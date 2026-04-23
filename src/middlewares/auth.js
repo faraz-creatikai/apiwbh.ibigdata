@@ -26,8 +26,13 @@ export const protectRoute = async (req, res, next) => {
         city: true,
         phone: true,
         status: true,
+        clientId:true,
+        createdPropertys:true,
+        createdCustomers:true,
+        createdFollowups:true,
         AddressLine1: true,
         AddressLine2: true,
+        assignedAIAgents: true,
         createdBy: true,
         createdAt: true,
         updatedAt: true,
@@ -89,7 +94,7 @@ export const isAdministrator = (req, res, next) => {
 // Check if user is city admin or administrator
 export const isCityAdminOrAbove = (req, res, next) => {
   try {
-    if (req.admin.role !== "administrator" && req.admin.role !== "city_admin") {
+    if (req.admin.role !== "administrator" &&  req.admin.role !== "client_admin" && req.admin.role !== "city_admin") {
       throw new ApiError(
         403,
         "Access denied. City Admin or Administrator privileges required"

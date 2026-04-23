@@ -129,9 +129,14 @@ export const importCustomers = async (req, res, next) => {
     // ----------------------------
     if (!req.file) return next(new ApiError(400, "No file uploaded"));
 
-    const workbook = xlsx.readFile(req.file.path);
+    const workbook = xlsx.readFile(req.file.path, {
+  cellDates: true,
+});
     const sheetName = workbook.SheetNames[0];
-    const sheet = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+    const sheet = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], {
+  raw: false,
+  dateNF: "dd-mm-yyyy",
+});
 
     if (!sheet.length) return next(new ApiError(400, "Empty Excel file"));
 
@@ -162,47 +167,72 @@ export const importCustomers = async (req, res, next) => {
       const customerFields = {};
 
       const prismaCustomerKeys = new Set([
-  "campaign",
-  "customertype",
-  "customersubtype",
-  "customername",
-  "contactnumber",
-  "city",
-  "location",
-  "sublocation",
-  "area",
-  "adderess",
-  "email",
-  "facillities",
-  "description",
-  "customerdate",
-  "price",
-  "url",
-  "other",
-  "referenceid",
-  "customerid",
-  "customeryear",
-  "video",
-  "verified",
-  "googlemap"
-]);
+        "campaign",
+        "customertype",
+        "customersubtype",
+        "customername",
+        "contactnumber",
+        "city",
+        "location",
+        "sublocation",
+        "area",
+        "adderess",
+        "email",
+        "facillities",
+        "description",
+        "customerdate",
+        "price",
+        "url",
+        "other",
+        "referenceid",
+        "customerid",
+        "customeryear",
+        "video",
+        "verified",
+        "googlemap"
+      ]);
 
-for (const key in r) {
-  const lowerKey = key.toLowerCase();
+      for (const key in r) {
+        const lowerKey = key.toLowerCase();
 
-  // ✅ Only store as CustomerField if it's in allowed (active) fields
-  if (allowedCustomerFieldKeys.has(lowerKey)) {
-    customerFields[key] = safeTrim(r[key]);
-    delete r[key]; // remove from main object
-  }
+        // ✅ Only store as CustomerField if it's in allowed (active) fields
+        if (allowedCustomerFieldKeys.has(lowerKey)) {
+          customerFields[key] = safeTrim(r[key]);
+          delete r[key]; // remove from main object
+        }
 
-  // ❌ Otherwise, just delete unknown keys from payload
-  else if (!prismaCustomerKeys.has(lowerKey)) {
-    delete r[key]; // skip/store nothing
-  }
-}
+        // ❌ Otherwise, just delete unknown keys from payload
+        else if (!prismaCustomerKeys.has(lowerKey)) {
+          delete r[key]; // skip/store nothing
+        }
+      }
 
 
+      let PriceNumber = 0;
+      if (r.Price) {
+
+        /*    PriceNumber = Number(
+         r.Price.toString().replace(/[^0-9.]/g, "")
+       ) */
+        const raw = r.Price.toString().toLowerCase();
+
+        let multiplier = 1;
+        if (raw.includes("thousand") || raw.includes("thousands") || raw.includes("हज़ार")) {
+          multiplier = 1000;
+        }
+        else if (raw.includes("lakh") || raw.includes("लाख")) {
+          multiplier = 100000;
+        } else if (
+          raw.includes("crore") ||
+          raw.includes("करोड़") ||
+          raw.includes("cr")
+        ) {
+          multiplier = 10000000;
+        }
+
+        PriceNumber =
+          Number(raw.replace(/[^0-9.]/g, "")) * multiplier;
+      }
 
       return {
         ...r,
@@ -222,6 +252,7 @@ for (const key in r) {
         CustomerSubType: safeTrim(r.CustomerSubType) || "",
         CustomerDate: excelDateToString(r.CustomerDate),
         Price: safeTrim(r.Price) || "",
+        PriceNumber: PriceNumber,
         URL: safeTrim(r.URL) || "",
         Other: safeTrim(r.Other) || "",
         ReferenceId: safeTrim(r.ReferenceId) || ""
@@ -290,6 +321,7 @@ for (const key in r) {
     const locationCache = new Map(); // `${cityName}::${locationName}` -> id
     const subLocationCache = new Map(); // `${cityName}::${locationName}::${subLocationName}` -> id
     const referenceIdCache = new Map();
+    const leadTypeCache = new Map();
 
     // ---------------------------
     // Helper: Get or create Campaign
@@ -550,6 +582,35 @@ for (const key in r) {
       return ref;
     };
 
+    const getOrCreateLeadType = async (leadtypename) => {
+      leadtypename = safeTrim(leadtypename);
+      if (!leadtypename) return null;
+
+      // cache by name
+      if (leadTypeCache.has(leadtypename)) return leadtypename;
+
+      // Name is NOT unique → use findFirst
+      const found = await prisma.leadType.findFirst({
+        where: { Name: leadtypename },
+        select: { id: true },
+      });
+
+      if (found) {
+        leadTypeCache.set(leadtypename, true);
+        return leadtypename;
+      }
+
+      // create new reference
+      await prisma.leadType.create({
+        data: {
+          Name: leadtypename,
+          Status: "Active", // ✅ REQUIRED
+        },
+      });
+
+      leadTypeCache.set(leadtypename, true);
+      return leadtypename;
+    };
 
 
 
@@ -601,6 +662,10 @@ for (const key in r) {
 
         if (row.ReferenceId) {
           await getOrCreateReferenceId(row.ReferenceId);
+        }
+
+        if (row.leadType) {
+          await getOrCreateLeadType(row.LeadType);
         }
 
 

@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
 import ApiError from "../utils/ApiError.js";
+import { followupAgent } from "../ai/agent.js";
 
 const prisma = new PrismaClient();
 
@@ -54,6 +55,7 @@ const transformFollowup = (followup) => ({
   StatusType: followup.StatusType || "",
   FollowupNextDate: followup.FollowupNextDate || "",
   Description: followup.Description || "",
+  CreatedBy: followup.CreatedBy || "",
   createdAt: followup.createdAt,
   updatedAt: followup.updatedAt,
 
@@ -76,13 +78,78 @@ const transformFollowup = (followup) => ({
       status: followup.customer.AssignTo.status,
     }
     : null,
+
 });
+
+
+// ai followup 
+export const createFollowupByAI = async (req, res, next) => {
+  try {
+    const admin = req.admin;
+    const { customerIds = [], userPrompt } = req.body;
+
+    // ❌ No params usage anymore
+    // const { customerId } = req.params;
+
+    // ✅ Validate input
+    if (!userPrompt) {
+      return next(new ApiError(400, "userPrompt is required"));
+    }
+
+    if (!Array.isArray(customerIds) || customerIds.length === 0) {
+      return next(new ApiError(400, "customerIds must be a non-empty array"));
+    }
+
+    // ✅ Fetch customers
+    const customers = await prisma.customer.findMany({
+      where: {
+        id: { in: customerIds },
+      },
+    });
+
+    if (!customers.length) {
+      return next(new ApiError(404, "No customers found"));
+    }
+
+    // ✅ Call AI once
+    const aiResponse = await followupAgent(userPrompt);
+
+    if (!aiResponse?.data) {
+      return next(new ApiError(500, "AI failed"));
+    }
+
+    const aiData = aiResponse.data;
+
+    // ✅ Create followups for all customers
+    const followups = await Promise.all(
+      customers.map((customer) =>
+        prisma.followup.create({
+          data: {
+            customerId: customer.id,
+            ...aiData,
+            CreatedById: admin.id || admin._id,
+          },
+        })
+      )
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Follow-ups created via AI",
+      count: followups.length,
+      aiMessage: aiResponse.message,
+    });
+  } catch (error) {
+    next(new ApiError(500, error.message));
+  }
+};
 
 // ---------------------------------------------------
 //  CREATE FOLLOWUP
 // ---------------------------------------------------
 export const createFollowup = async (req, res, next) => {
   try {
+    const admin = req.admin;
     const { customerId } = req.params;
     const { StartDate, StatusType, FollowupNextDate, Description } = req.body;
 
@@ -98,6 +165,7 @@ export const createFollowup = async (req, res, next) => {
         StatusType,
         FollowupNextDate,
         Description,
+        CreatedById: admin.id || admin._id,
       },
       include: { customer: { include: { AssignTo: true } } },
     });
@@ -121,7 +189,7 @@ export const getFollowups = async (req, res, next) => {
 
     const {
       page = 1,
-      limit, 
+      limit,
       keyword = "",
       StatusType,
       Campaign,
@@ -143,6 +211,9 @@ export const getFollowups = async (req, res, next) => {
     // -------------------------
     const whereFollowup = {};
     if (StatusType) whereFollowup.StatusType = StatusType.trim();
+    if (admin.role !== "administrator") {
+      whereFollowup.CreatedById = admin.id;
+    }
 
     // -------------------------
     // CUSTOMER FILTER
@@ -159,12 +230,23 @@ export const getFollowups = async (req, res, next) => {
 
     if (User) {
       customerFilter.AssignTo = {
-        name: { contains: User.trim() },
+        some: {
+          name: { contains: User.trim() },
+        },
       };
     }
+    if (admin.role === "city_admin") {
+      customerFilter.City = { contains: admin.city };
+    }
 
+    if (admin.role === "city_admin" && admin.clientId) {
+      customerFilter.City = { contains: admin.city };
+      customerFilter.ClientId = { contains: admin.clientId };
+    }
     if (admin.role === "user") {
-      customerFilter.AssignTo = { id: admin.id };
+      customerFilter.AssignTo = {
+        some: { id: admin.id },
+      };
     }
 
     if (keyword) {
@@ -192,7 +274,17 @@ export const getFollowups = async (req, res, next) => {
       prisma.followup.count({ where }),
       prisma.followup.findMany({
         where,
-        include: { customer: { include: { AssignTo: true } } },
+        include: {
+          customer: { include: { AssignTo: true } },
+          CreatedBy: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              role: true,
+            },
+          }
+        },
         ...(isPaginated && { skip, take: perPage }), // ✅ CONDITIONAL
         orderBy: { createdAt: "desc" },
       }),

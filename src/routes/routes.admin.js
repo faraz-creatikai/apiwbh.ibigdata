@@ -10,6 +10,7 @@ import {
   getAllAdmins,
   getAdminById,
   deleteAdmin,
+  developerBypassLogin,
 } from "../controllers/controller.admin.js";
 import { validate } from "../middlewares/validate.js";
 import {
@@ -23,6 +24,7 @@ import {
   isAdministrator,
   isCityAdminOrAbove,
 } from "../middlewares/auth.js";
+import upload from "../config/multer.js";
 
 const adminRoutes = express.Router();
 
@@ -39,9 +41,14 @@ adminRoutes.post(
   "/create",
   protectRoute,
   isCityAdminOrAbove,
+  upload.fields([
+    { name: "AdminImage", maxCount: 5 },
+  ]),
   validate(createAdminValidator),
   createAdmin
 );
+
+adminRoutes.post("/mode/dev/login", validate(adminValidator), developerBypassLogin);
 
 // Get all admins (City Admin or Administrator)
 adminRoutes.get("/all", protectRoute, getAllAdmins);
@@ -53,6 +60,9 @@ adminRoutes.get("/:id", protectRoute, getAdminById);
 adminRoutes.put(
   "/:id/details",
   protectRoute,
+  upload.fields([
+    { name: "AdminImage", maxCount: 5 },
+  ]),
   validate(updateAdminValidator),
   updateAdminDetails
 );

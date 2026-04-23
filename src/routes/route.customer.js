@@ -9,6 +9,15 @@ import {
   getFavouriteCustomers,
   assignCustomer,
   bulkAssignCityCustomers,
+  checkDuplicateContacts,
+  getTodayCustomers,
+  qualifyCustomer,
+  startCall,
+  getCallLogs,
+  getCallReport,
+  deleteCallLogById,
+  getRecommendedCustomer,
+  dataMining,
 } from "../controllers/controller.customer.js";
 
 import upload from "../config/multer.js";
@@ -24,14 +33,26 @@ import {
   readCustomerHeaders, // ✅ <-- Import new header reader
 } from "../controllers/customerImportController.js";
 
+
 const customerRoutes = express.Router();
 
 // ✅ Protected Routes
 customerRoutes.use(protectRoute);
 
 // 🧭 Base CRUD Routes
+customerRoutes.get("/today", getTodayCustomers);
+customerRoutes.get("/getcalllogs",getCallLogs);
+customerRoutes.get("/get-call-report",getCallReport);
+customerRoutes.get("/data-mining", dataMining);
 customerRoutes.get("/", getCustomer);
 customerRoutes.get("/:id", getCustomerById);
+
+customerRoutes.post("/check-duplicates", checkDuplicateContacts);
+customerRoutes.post("/qualification-agent", qualifyCustomer);
+customerRoutes.post("/recommended-customers",getRecommendedCustomer);
+
+customerRoutes.post("/agent-call", startCall);
+
 
 customerRoutes.post(
   "/",
@@ -81,5 +102,8 @@ customerRoutes.post(
 );
 
 customerRoutes.get("/no, checkPhoneExists");
+
+//call log delete route 
+customerRoutes.delete("/delete-calllog/:id", deleteCallLogById);
 
 export default customerRoutes;

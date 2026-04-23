@@ -37,7 +37,7 @@ export const createAdminValidator = [
   body("role")
     .notEmpty()
     .withMessage("Role is required")
-    .isIn(["administrator", "city_admin", "user"])
+    .isIn(["administrator","client_admin", "city_admin", "user"])
     .withMessage("Invalid role. Must be administrator, city_admin, or user"),
   body("city")
     .optional()
@@ -87,8 +87,8 @@ export const updateAdminValidator = [
     .withMessage("City name must be at least 2 characters long"),
   body("status")
     .optional()
-    .isIn(["Active", "Inactive"])
-    .withMessage("Status must be either 'Active' or 'Inactive'"),
+    .isIn(["active", "inactive"])
+    .withMessage("Status must be either 'active' or 'inactive'"),
 ];
 
 // Update password validator
