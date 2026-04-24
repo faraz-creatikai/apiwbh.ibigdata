@@ -269,7 +269,7 @@ model Template {
   name          String   @unique
   type          String // email | whatsapp
   subject       String   @default("")
-  body          String
+  body          String   @db.LongText
   description   String   @default("")
   whatsappImage Json?    @default("[]")
   createdBy     String   @default("system")
