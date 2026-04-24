@@ -7,13 +7,21 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-export const sendWhatsApp = async (to, message) => {
+export const sendWhatsApp = async (to, message, imageUrl = null) => {
   try {
-    const result = await client.messages.create({
+    const payload = {
       from: process.env.TWILIO_WHATSAPP_NUMBER,
       to: `whatsapp:${to}`,
       body: message,
-    });
+    };
+
+    // ✅ Add media if exists
+    if (imageUrl) {
+      payload.mediaUrl = [imageUrl]; // must be array
+    }
+
+    const result = await client.messages.create(payload);
+
     console.log("WhatsApp sent:", result.sid);
     return result;
   } catch (error) {

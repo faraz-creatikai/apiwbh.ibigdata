@@ -150,7 +150,14 @@ export const sendWhatsAppByTemplate = async (req, res, next) => {
 
         const message = replacePlaceholders(template.body, c);
 
-        const result = await sendWhatsApp(formattedPhone, message);
+
+        const imageUrl = template.whatsappImage?.[0] || null;
+
+        const result = await sendWhatsApp(
+          formattedPhone,
+          message,
+          imageUrl
+        );
 
         results.push({
           id: c.id,

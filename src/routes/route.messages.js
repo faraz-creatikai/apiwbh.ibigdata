@@ -9,7 +9,7 @@ import {
 const messageRoutes = express.Router();
 
 messageRoutes.post("/email", sendEmailByTemplate);
-messageRoutes.post("/whatsapp", sendWhatsAppMessage);
+messageRoutes.post("/whatsapp", sendWhatsAppByTemplate);
 
 messageRoutes.post("/call",callCustomer);
 
