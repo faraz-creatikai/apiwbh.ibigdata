@@ -371,9 +371,9 @@ export const updateAdminDetails = async (req, res) => {
       // fallback to existing DB images
       AdminImage = safeParse(targetAdmin.AdminImage) || [];
     }
-   console.log("RAW removedAdminImages:", req.body.removedAdminImages);
-console.log("PARSED removedAdminImages:", updates.removedAdminImages);
-console.log("TYPE:", typeof updates.removedAdminImages);
+    console.log("RAW removedAdminImages:", req.body.removedAdminImages);
+    console.log("PARSED removedAdminImages:", updates.removedAdminImages);
+    console.log("TYPE:", typeof updates.removedAdminImages);
 
     // REMOVE SPECIFIC CUSTOMER IMAGES
     if (updates.removedAdminImages.length > 0) {
@@ -388,12 +388,12 @@ console.log("TYPE:", typeof updates.removedAdminImages);
         })
       );
 
-     AdminImage = AdminImage.filter(
-  (img) =>
-    !updates.removedAdminImages.some(
-      (removed) => removed.trim() === img.trim()
-    )
-);
+      AdminImage = AdminImage.filter(
+        (img) =>
+          !updates.removedAdminImages.some(
+            (removed) => removed.trim() === img.trim()
+          )
+      );
 
       console.log(" wow here is ", AdminImage)
     }
@@ -639,6 +639,45 @@ export const getAllAdmins = async (req, res) => {
       orderBy: { createdAt: "desc" },
       include: {
         assignedAIAgents: true,
+        createdCustomers: {
+          take: 10,                        // ← latest 10 only
+          orderBy: { createdAt: "desc" }
+        },
+        createdFollowups: {
+          take: 10,
+          orderBy: { createdAt: "desc" }
+        },
+        createdPropertys: {
+          take: 10,
+          orderBy: { createdAt: "desc" }
+        },
+      }
+    });
+
+    res.json({
+      success: true,
+      count: admins.length,
+      admins: admins.map(transform),
+    });
+  } catch (error) {
+    console.log(error.message);
+    res
+      .status(error instanceof ApiError ? error.statusCode : 500)
+      .json({ success: false, message: error.message });
+  }
+};
+
+
+//GET ALL CLIENT ADMINS
+export const getClientAdmins = async (req, res) => {
+  try {
+
+
+    const clientAdmins = await prisma.admin.findMany({
+      where: { role: "client_admin" },
+      orderBy: { createdAt: "desc" },
+      include: {
+        assignedAIAgents: true,
         createdPropertys: true,
         createdCustomers: true,
         createdFollowups: true,
@@ -647,8 +686,8 @@ export const getAllAdmins = async (req, res) => {
 
     res.json({
       success: true,
-      count: admins.length,
-      admins: admins.map(transform),
+      count: clientAdmins.length,
+      clientAdmins: clientAdmins.map(transform),
     });
   } catch (error) {
     console.log(error.message);

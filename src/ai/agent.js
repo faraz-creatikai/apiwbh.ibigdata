@@ -6,6 +6,7 @@ import { followupPrompt } from "./prompts/followupPrompt.js";
 import { keywordSearchPrompt } from "./prompts/keywordSearchPrompt.js";
 import { propertyRecommendationPrompt } from "./prompts/propertyRecommendationPrompt.js";
 import { qualifyCustomerPrompt } from "./prompts/qualifyCustomerPrompt.js";
+import { socialAgentPrompt } from "./prompts/socialAgentPrompt.js";
 
 
 export function safeJsonParse(raw) {
@@ -286,4 +287,32 @@ export async function followupAgentOpenai(userPrompt) {
   }
 
   return safeJsonParse(jsonMatch[0]);
+}
+
+
+export async function SocialContentAgent(payload) {
+    const response = await gemini.models.generateContent({
+    model: "models/gemini-2.5-flash-lite",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `
+${socialAgentPrompt}
+DATA:
+${JSON.stringify(payload, null, 2)}
+            `
+          }
+        ]
+      }
+    ],
+  });
+
+  const raw = response?.text;
+
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error("Invalid AI response");
+
+  return JSON.parse(jsonMatch[0]);
 }

@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 
 import ApiError from "../utils/ApiError.js";
 import { followupAgent } from "../ai/agent.js";
+import { notifyCustomerFollowupTaken, notifyFollowupNext } from "../jobs/notification/notificationEvents.js";
 
 const prisma = new PrismaClient();
 
@@ -167,8 +168,21 @@ export const createFollowup = async (req, res, next) => {
         Description,
         CreatedById: admin.id || admin._id,
       },
-      include: { customer: { include: { AssignTo: true } } },
+      include: { customer: true },
     });
+
+
+
+        // if next date is today, notify immediately
+    const today = new Date();
+    const dd   = String(today.getDate()).padStart(2, "0");
+    const mm   = String(today.getMonth() + 1).padStart(2, "0");
+    const yyyy = today.getFullYear();
+    const todayStr = `${dd}-${mm}-${yyyy}`;
+
+    if (followup.FollowupNextDate === todayStr) {
+      await notifyFollowupNext({ followup: followup, customer: followup.customer });
+    }
 
     res.status(201).json({
       success: true,

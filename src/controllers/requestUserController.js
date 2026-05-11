@@ -4,6 +4,7 @@ import prisma from "../config/prismaClient.js";
 import ApiError from "../utils/ApiError.js";
 import cloudinary from "../config/cloudinary.js";
 import fs from "fs";
+import { notifyNewUserRequest } from "../jobs/notification/notificationEvents.js";
 
 
 
@@ -116,7 +117,9 @@ export const denyRequest = async (req, res) => {
 
 export const getAllRequestUser = async (req, res) => {
     try {
-        const requestUsers = await prisma.requestUser.findMany();
+        const requestUsers = await prisma.requestUser.findMany({
+             orderBy: { createdAt: "desc" },
+        });
 
         res.status(200).json({
             success: true,
@@ -193,6 +196,12 @@ export const newUserSignup = async (req, res) => {
         });
 
         const token = genrateToken(newUser.id);
+
+            await notifyNewUserRequest({
+              newUser: newUser,
+            });
+            console.log("Notification job triggered for new user request:", newUser.name);
+        
 
         res.status(201).json({
             success: true,

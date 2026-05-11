@@ -41,8 +41,12 @@ model Admin {
 
   assignedContact Contact[] @relation("ContactAssignedTo")
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  recievedNotification Notification[] @relation("NotificationReceiver")
+  sendNotification     Notification[] @relation("NotificationSender")
+
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  scheduledPosts ScheduledPost[]
 }
 
 enum Role {
@@ -394,6 +398,7 @@ model Customer {
   isFavourite     Boolean @default(false)
   isChecked       Boolean @default(false)
   LeadTemperature String? @default("cold")
+  DealClosed      Boolean @default(false)
 
   // -------------------------------
   // RELATIONS with Admin
@@ -438,6 +443,8 @@ model Followup {
   updatedAt DateTime @updatedAt
   contact   Contact? @relation(fields: [contactId], references: [id])
   contactId String?
+
+  isNotified Boolean @default(false)
 }
 
 model Contact {
@@ -501,12 +508,39 @@ model RequestUser {
   city           String?
   experience     String?
   image          Json?   @default("[]")
+
+  createdAt DateTime @default(now())
 }
 
 model CustomerFieldLabel {
   id           Int    @id @default(autoincrement())
   fieldKey     String @unique // customerName, contactNumber
   displayLabel String // Student Name, Mobile Number
+}
+
+model Notification {
+  id         String  @id @default(uuid())
+  type       String // CUSTOMER_CREATED, FOLLOWUP_ADDED, etc.
+  title      String
+  message    String  @db.LongText
+  entityId   String? // customerId / contactId etc
+  entityType String? // "Customer", "Contact"
+
+  receiverId String // Admin who will receive
+  senderId   String? // Who triggered
+
+  isRead Boolean @default(false)
+
+  metadata Json? @default("{}") // extra data
+
+  createdAt DateTime @default(now())
+
+  receiver Admin  @relation("NotificationReceiver", fields: [receiverId], references: [id])
+  sender   Admin? @relation("NotificationSender", fields: [senderId], references: [id])
+
+  @@index([receiverId])
+  @@index([entityId])
+  @@index([type])
 }
 
 model AIAgent {
@@ -721,4 +755,47 @@ model MinedLead {
   @@index([source])
   @@index([savedAt])
   @@map("mined_leads")
+}
+
+model SocialAccount {
+  id          String  @id @default(cuid())
+  userId      String
+  platform    String // INSTAGRAM
+  accessToken String  @db.LongText
+  igAccountId String
+  pageId      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, platform])
+}
+
+model ScheduledPost {
+  id      String @id @default(cuid())
+  adminId String
+  admin   Admin  @relation(fields: [adminId], references: [id]) // Assumes you have a User model
+
+  // Post Content
+  imageUrl String  @db.Text
+  caption  String? @db.Text
+
+  // Meta Specifics
+  platform    String  @default("INSTAGRAM")
+  igAccountId String
+  containerId String? // The ID returned by Step 3 (Media Container)
+  scheduledId String? // The ID returned by Step 4 (Scheduled Object)
+
+  // Timing
+  scheduledTime DateTime
+  status        PostStatus @default(SCHEDULED) // Enum: SCHEDULED, PUBLISHED, FAILED
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum PostStatus {
+  SCHEDULED
+  PUBLISHED
+  FAILED
 }

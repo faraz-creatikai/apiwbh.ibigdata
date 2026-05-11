@@ -7,6 +7,8 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
+
+//twilio api
 export const sendWhatsApp = async (to, message, imageUrl = null) => {
   try {
     const payload = {
@@ -30,6 +32,48 @@ export const sendWhatsApp = async (to, message, imageUrl = null) => {
   }
 };
 
+
+//digitalsms api
+/* export const sendWhatsApp = async (to, message, imageUrl = null) => {
+  try {
+    // 👉 remove "+" if present
+    const mobile = to.replace("+", "");
+
+    // 👉 append image URL if exists
+    let finalMessage = message;
+    if (imageUrl) {
+      finalMessage += ` ${imageUrl}`;
+    }
+
+    // 👉 build query params safely
+    const params = new URLSearchParams({
+      apikey: process.env.DIGITALSMS,
+      mobile: mobile,
+      msg: finalMessage,
+    });
+
+    const url = `https://demo.digitalsms.biz/api/?${params.toString()}`;
+
+    const response = await fetch(url, {
+      method: "GET",
+    });
+
+    const data = await response.json(); // or .text() if their API is not JSON
+
+    console.log("WhatsApp sent:", data);
+
+    return {
+      sid: data?.message_id || "no-id",
+      raw: data,
+    };
+  } catch (error) {
+    console.error("WhatsApp error:", error.message);
+    throw error;
+  }
+}; */
+
+
+//meta facebook api
 // export const sendWhatsApp = async (to, message) => {
 //   try {
 //     // Format phone (remove '+' if present)

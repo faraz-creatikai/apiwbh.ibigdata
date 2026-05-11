@@ -236,7 +236,7 @@ export const getProperty = async (req, res, next) => {
     // --------------------------------------------
     // ROLE-BASED FILTERS
     // --------------------------------------------
-
+/* 
     if (admin.role !== "administrator" && admin.clientId) {
       AND.push({
         OR: [
@@ -250,7 +250,7 @@ export const getProperty = async (req, res, next) => {
       AND.push({ City: { contains: admin.city } });
     } else if (admin.role === "user") {
       AND.push({ AssignToId: admin.id || admin._id });
-    }
+    } */
 
 
     // --------------------------------------------

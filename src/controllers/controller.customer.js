@@ -9,6 +9,7 @@ import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
 import { CallingAgent, DataMiningAgent, QualifyAgent } from "../ai/agent.js";
 import { callingAgentPrompt } from "../ai/prompts/callingAgentPrompt.js";
+import { notifyCustomerCreated } from "../jobs/notification/notificationEvents.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -381,6 +382,9 @@ export const getTodayCustomers = async (req, res, next) => {
 // ------------------------------------------------------
 //               GET CUSTOMERS
 // ------------------------------------------------------
+
+
+//new scaled get controller with better performance
 export const getCustomer = async (req, res, next) => {
   try {
     const admin = req.admin;
@@ -413,16 +417,11 @@ export const getCustomer = async (req, res, next) => {
 
     let AND = [];
     const REQUIRED = Limit !== undefined ? Number(Limit) : 100;
-    const FETCH_MULTIPLIER = 3; // safe over-fetch
-
     const offset = Number(Skip);
 
     // --------------------------------------------
     // ROLE-BASED FILTERS
     // --------------------------------------------
-
-
-
     if (admin.role !== "administrator" && admin.clientId) {
       AND.push({
         OR: [
@@ -432,36 +431,24 @@ export const getCustomer = async (req, res, next) => {
       });
     }
 
-
     // --------------------------------------------
     // USER → ONLY DIRECT ASSIGNMENT (STRICT)
     // --------------------------------------------
     if (admin.role === "user") {
       const adminId = admin.id || admin._id;
-
       AND.push({
         OR: [
-          {
-            AssignTo: {
-              some: { id: adminId }
-            }
-          },
-          {
-            CreatedById: adminId
-          }
+          { AssignTo: { some: { id: adminId } } },
+          { CreatedById: adminId }
         ]
       });
     }
     else if (admin.role === "city_admin") {
       const adminId = admin.id || admin._id;
 
-      // Step 1: get campaigns
+      // Step 1: get campaigns (kept exactly as before)
       const assignedCampaignsData = await prisma.customer.findMany({
-        where: {
-          AssignTo: {
-            some: { id: adminId }
-          }
-        },
+        where: { AssignTo: { some: { id: adminId } } },
         select: { Campaign: true },
         distinct: ["Campaign"]
       });
@@ -471,32 +458,17 @@ export const getCustomer = async (req, res, next) => {
         .filter(Boolean);
 
       // STEP 2: GLOBAL CITY FILTER (VERY IMPORTANT)
-      AND.push({
-        City: {
-          equals: admin.city
-        }
-      });
+      AND.push({ City: { equals: admin.city } });
 
-      // STEP 3: ACCESS LOGIC (non-restrictive now)
+      // STEP 3: ACCESS LOGIC
       AND.push({
         OR: [
           { CreatedById: adminId },
-
-          {
-            AssignTo: {
-              some: { id: adminId }
-            }
-          },
-
+          { AssignTo: { some: { id: adminId } } },
           ...(assignedCampaigns.length > 0
-            ? [{
-              Campaign: { in: assignedCampaigns }
-            }]
+            ? [{ Campaign: { in: assignedCampaigns } }]
             : []),
-
-          // THIS LINE FIXES YOUR CORE ISSUE
-          // allow other city data even if not assigned/campaign
-          {}
+          {} // allow other city data even if not assigned/campaign
         ]
       });
     }
@@ -505,24 +477,18 @@ export const getCustomer = async (req, res, next) => {
     // BASIC FILTERS
     // --------------------------------------------
     if (Campaign) AND.push({ Campaign: { contains: Campaign.trim() } });
-
-    if (CustomerType)
-      AND.push({ CustomerType: { contains: CustomerType.trim() } });
-
+    if (CustomerType) AND.push({ CustomerType: { contains: CustomerType.trim() } });
     if (CustomerSubType) AND.push({ CustomerSubType: { contains: CustomerSubType.trim() } });
-
     if (StatusType) AND.push({ Verified: { contains: StatusType.trim() } });
-
     if (LeadTemperature) AND.push({ LeadTemperature: { contains: LeadTemperature.trim() } });
     if (LeadType) AND.push({ LeadType: { contains: LeadType.trim() } });
-
     if (City) AND.push({ City: { contains: City.trim() } });
-
     if (Location) AND.push({ Location: { contains: Location.trim() } });
     if (SubLocation) AND.push({ SubLocation: { contains: SubLocation.trim() } });
     if (ContactNumber) AND.push({ ContactNumber: { contains: ContactNumber.trim() } });
     if (ReferenceId) AND.push({ ReferenceId: { contains: ReferenceId.trim() } });
     if (Price) AND.push({ Price: { contains: Price.trim() } });
+
     // --------------------------------------------
     // PRICE RANGE FILTER (MIN / MAX)
     // --------------------------------------------
@@ -532,7 +498,6 @@ export const getCustomer = async (req, res, next) => {
     if (MinPrice || MaxPrice) {
       const min = MinPrice ? cleanNumber(MinPrice) : null;
       const max = MaxPrice ? cleanNumber(MaxPrice) : null;
-
       AND.push({
         PriceNumber: {
           ...(min !== null && !isNaN(min) && { gte: min }),
@@ -540,10 +505,9 @@ export const getCustomer = async (req, res, next) => {
         }
       });
     }
+
     if (typeof isFavourite !== "undefined") {
-      AND.push({
-        isFavourite: isFavourite === "true"
-      });
+      AND.push({ isFavourite: isFavourite === "true" });
     }
 
     // --------------------------------------------
@@ -554,9 +518,8 @@ export const getCustomer = async (req, res, next) => {
     if (keyword) {
       const { tokens, fields, priceRange } = await getKeywordSearchData(keyword);
 
-      console.log(" tokens are ", tokens, "  \n fields are : ", fields)
+      console.log(" tokens are ", tokens, "  \n fields are : ", fields);
 
-      // ✅ APPLY KEYWORD FILTER ONLY IF TOKENS EXIST
       if (tokens.length > 0) {
         AND.push({
           AND: tokens.map((t) => ({
@@ -567,12 +530,10 @@ export const getCustomer = async (req, res, next) => {
         });
       }
 
-      // ✅ APPLY PRICE RANGE FROM AI (independent)
       if (priceRange?.min || priceRange?.max) {
         const min = priceRange?.min !== null
           ? Number(String(priceRange.min).replace(/[^0-9]/g, ""))
           : null;
-
         const max = priceRange?.max !== null
           ? Number(String(priceRange.max).replace(/[^0-9]/g, ""))
           : null;
@@ -588,167 +549,78 @@ export const getCustomer = async (req, res, next) => {
       }
     }
 
-    /*      if (keyword) {
-       const tokens = keyword.split(" ").filter(Boolean);
- 
-       // Default fields (if user does NOT select anything)
-       const defaultFields = [
-         "Description",
-         "Campaign",
-         "CustomerType",
-         "CustomerSubType",
-         "customerName",
-         "ContactNumber",
-         "City",
-         "Location",
-         "SubLocation",
-         "Price",
-         "ReferenceId",
-       ];
- 
-       // User-selected fields (comma-separated)
-       // User-selected fields (array or single string)
-       let selectedFields;
-       if (!SearchIn) {
-         selectedFields = defaultFields; // default fields if nothing selected
-       } else if (Array.isArray(SearchIn)) {
-         selectedFields = SearchIn.map(f => f.trim());
-       } else {
-         selectedFields = SearchIn.split(",").map(f => f.trim());
-       }
- 
-       AND.push({
-         AND: tokens.map((t) => ({
-           OR: selectedFields.map((field) => ({
-             [field]: { contains: t },
-           })),
-         })),
-       });
-     } */
-
-
-
-
     const where = AND.length ? { AND } : {};
 
     let orderBy = [];
-
     if (sort?.toLowerCase() === "asc") {
       orderBy.push({ createdAt: "asc" });
-    }
-    else {
+    } else {
       orderBy.push({ updatedAt: "desc" });
       orderBy.push({ createdAt: "desc" });
     }
 
-    // --------------------------------------------
-    // TOTAL COUNT (FOR PAGINATION)
-    // --------------------------------------------
-    //console.log("FINAL WHERE => ", JSON.stringify(where, null, 2));
-    const totalRecords = await prisma.customer.count({ where });
+// --------------------------------------------
+// MAIN FETCH — two strategies based on ContactNumber
+// --------------------------------------------
+let customers;
+let totalRecords;
 
-    // --------------------------------------------
-    // MAIN PRISMA FETCH
-    // --------------------------------------------
+if (!ContactNumber) {
+  // Step 1: all distinct IDs only — lightweight
+  const allDistinctIds = await prisma.customer.findMany({
+    where,
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    distinct: ["ContactNumber"],
+    select: { id: true },
+  });
 
-    let customers;
+  totalRecords = allDistinctIds.length;
 
-    if (Limit !== undefined) {
-      const REQUIRED = Number(Limit);
+  // Step 2: paginate in JS only if Limit was actually provided
+  const pageIds = Limit !== undefined
+    ? allDistinctIds.slice(offset, offset + REQUIRED).map(r => r.id)
+    : allDistinctIds.slice(offset).map(r => r.id); // ← no upper bound when no Limit
 
-      if (!ContactNumber) {
-        const BUFFER = REQUIRED * FETCH_MULTIPLIER;
+  // Step 3: full fetch for just the page
+  customers = await prisma.customer.findMany({
+    where: { id: { in: pageIds } },
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    include: { AssignTo: true },
+  });
 
-        customers = await prisma.customer.findMany({
-          where,
-          orderBy: [
-            { updatedAt: "desc" },
-            { createdAt: "desc" }
-          ],
-          distinct: ["ContactNumber"],
-          skip: 0,
-          take: BUFFER, // ✅ changed
-          include: { AssignTo: true }
-        });
+} else {
+  // Normal flow when filtering by ContactNumber
+  totalRecords = await prisma.customer.count({ where });
 
-        // ✅ global sorting
-        customers.sort((a, b) => {
-          const aTime = new Date(a.updatedAt || a.createdAt).getTime();
-          const bTime = new Date(b.updatedAt || b.createdAt).getTime();
-          return bTime - aTime;
-        });
-
-        // ✅ FINAL LIMIT APPLY HERE ONLY
-        customers = customers.slice(0, REQUIRED);
-      } else {
-        customers = await prisma.customer.findMany({
-          where,
-          orderBy,
-          skip: Limit !== undefined ? offset : undefined,
-          take: REQUIRED,
-          include: { AssignTo: true }
-        });
-      }
-
-    } else {
-      if (!ContactNumber) {
-        // ✅ 🔥 APPLY DISTINCT HERE ALSO
-        customers = await prisma.customer.findMany({
-          where,
-          orderBy: [
-            { updatedAt: "desc" },
-            { createdAt: "desc" }
-          ],
-          distinct: ["ContactNumber"],
-          skip: offset,
-          include: { AssignTo: true }
-        });
-
-        // ✅ IMPORTANT: re-sort globally
-        customers.sort((a, b) => {
-          const aTime = new Date(a.updatedAt || a.createdAt).getTime();
-          const bTime = new Date(b.updatedAt || b.createdAt).getTime();
-          return bTime - aTime;
-        });
-
-      } else {
-        // ✅ normal flow
-        customers = await prisma.customer.findMany({
-          where,
-          orderBy,
-          skip: offset,
-          include: { AssignTo: true }
-        });
-      }
-    }
-
+  customers = await prisma.customer.findMany({
+    where,
+    orderBy,
+    skip: offset,
+    ...(Limit !== undefined && { take: REQUIRED }), // ← only apply take if Limit given
+    include: { AssignTo: true },
+  });
+}
 
     // --------------------------------------------
     // POST-FETCH FILTER + SORT BY CustomerDate
-    // ONLY IF BOTH START AND END PROVIDED
+    // Kept in JS because CustomerDate is stored as String
+    // in mixed dd-mm-yyyy / yyyy-mm-dd formats
     // --------------------------------------------
     if (StartDate && EndDate) {
-
       const parseDMY = (str) => {
         if (!str) return null;
-
         const parts = str.split("-");
         if (parts.length !== 3) return null;
 
         let day, month, year;
-
-        // yyyy-mm-dd
         if (parts[0].length === 4) {
-          [year, month, day] = parts.map(Number);
-        }
-        // dd-mm-yyyy
-        else {
-          [day, month, year] = parts.map(Number);
+          [year, month, day] = parts.map(Number); // yyyy-mm-dd
+        } else {
+          [day, month, year] = parts.map(Number); // dd-mm-yyyy
         }
 
         const d = new Date(year, month - 1, day);
-        d.setHours(0, 0, 0, 0); // 🔥 normalize time
-
+        d.setHours(0, 0, 0, 0);
         return isNaN(d.getTime()) ? null : d;
       };
 
@@ -756,8 +628,7 @@ export const getCustomer = async (req, res, next) => {
       const end = parseDMY(EndDate);
 
       if (start && end) {
-
-        end.setHours(23, 59, 59, 999); // include full end day
+        end.setHours(23, 59, 59, 999);
 
         // 1️⃣ FILTER FIRST
         customers = customers.filter((c) => {
@@ -765,12 +636,7 @@ export const getCustomer = async (req, res, next) => {
           return d && d >= start && d <= end;
         });
 
-        // 2️⃣ DEDUPLICATE BEFORE SORT (important)
-        /*  if (!ContactNumber) {
-           customers = deduplicateByContact(customers);
-         } */
-
-        // 3️⃣ STRICT ASC SORT (24 → 25 → 26 → 27 → 28)
+        // 2️⃣ STRICT DESC SORT by CustomerDate
         customers.sort((a, b) => {
           const aTime = parseDMY(a.CustomerDate)?.getTime() || 0;
           const bTime = parseDMY(b.CustomerDate)?.getTime() || 0;
@@ -779,12 +645,9 @@ export const getCustomer = async (req, res, next) => {
       }
     }
 
-
-
-
-
     // --------------------------------------------
     // FILTER BY USER (name / email / role / city)
+    // Post-fetch because it filters on relation data
     // --------------------------------------------
     if (User) {
       const userLower = User.toLowerCase();
@@ -795,8 +658,6 @@ export const getCustomer = async (req, res, next) => {
             { name: { contains: User } },
             { email: { contains: User } },
             { city: { contains: User } },
-
-            // ENUM ROLE MATCH (no contains allowed)
             ["admin", "city_admin", "user"].includes(userLower)
               ? { role: { equals: User } }
               : undefined,
@@ -810,84 +671,24 @@ export const getCustomer = async (req, res, next) => {
       const filtered = customers.filter(
         (c) => c.AssignTo?.some(a => allowedIds.includes(a.id))
       );
-      customers.sort((a, b) => {
+
+      // Sort preserved as original
+      filtered.sort((a, b) => {
         const aTime = new Date(a.updatedAt || a.createdAt).getTime();
         const bTime = new Date(b.updatedAt || b.createdAt).getTime();
         return bTime - aTime;
       });
-      const transformed = await Promise.all(filtered.map(transformGetCustomer));
 
+      const transformed = await Promise.all(filtered.map(transformGetCustomer));
       return res.status(200).json(transformed);
     }
-
-    // --------------------------------------------
-    // PRIORITY-BASED MATCHING & RANKING (AI-LIKE)
-    // --------------------------------------------
-    /* if (keyword) {
-      const tokens = keyword.split(" ").filter(Boolean);
-
-      customers = customers.map((c) => {
-        let score = 0;
-
-        const desc = c.Description?.toLowerCase() || "";
-        const campaign = c.Campaign?.toLowerCase() || "";
-        const type = c.CustomerType?.toLowerCase() || "";
-        const subtype = c.CustomerSubType?.toLowerCase() || "";
-        const city = c.City?.toLowerCase() || "";
-        const location = c.Location?.toLowerCase() || "";
-        const sublocation = c.SubLocation?.toLowerCase() || "";
-        const price = c.Price?.toString() || "";
-        const ref = c.ReferenceId?.toLowerCase() || "";
-
-        // 🔥 STRICT PRIORITY ORDER
-        if (desc.includes(keyword)) score += 100;
-        if (campaign.includes(keyword)) score += 90;
-        if (type.includes(keyword)) score += 80;
-        if (subtype.includes(keyword)) score += 70;
-        if (city.includes(keyword)) score += 60;
-        if (location.includes(keyword)) score += 50;
-        if (sublocation.includes(keyword)) score += 40;
-        if (price.includes(keyword)) score += 30;
-        if (ref.includes(keyword)) score += 20;
-
-        // 🔹 Multi-word partial matching (AI feel)
-        tokens.forEach((t) => {
-          if (desc.includes(t)) score += 10;
-          if (campaign.includes(t)) score += 9;
-          if (type.includes(t)) score += 8;
-          if (subtype.includes(t)) score += 7;
-          if (city.includes(t)) score += 6;
-          if (location.includes(t)) score += 5;
-          if (sublocation.includes(t)) score += 4;
-          if (price.includes(t)) score += 3;
-          if (ref.includes(t)) score += 2;
-        });
-
-        return { ...c, _score: score };
-      });
-
-      // Highest relevance first
-      customers.sort((a, b) => b._score - a._score);
-    } */
-
-
-    // --------------------------------------------
-    // DEDUPLICATE BY CONTACTNUMBER ONLY IF NOT FILTERED BY ContactNumber
-    // --------------------------------------------
-    /*  if (!ContactNumber) {
-       customers = deduplicateByContact(customers);
-     } */
-
-    /*     if (Limit !== undefined) {
-          customers = customers.slice(0, Number(Limit));
-        } */
 
     // --------------------------------------------
     // FINAL TRANSFORM
     // --------------------------------------------
     const transformed = await Promise.all(customers.map(transformGetCustomer));
-
     res.status(200).json(transformed);
+
   } catch (error) {
     next(new ApiError(500, error.message));
   }
@@ -1100,6 +901,12 @@ export const createCustomer = async (req, res, next) => {
           })
         });
         console.log(" automation res is ", automationRes) */
+
+            // 🔥 UNIVERSAL EVENT TRIGGER
+/*     await notifyCustomerCreated({
+      customer: newCustomer,
+      admin,
+    }); */
 
     res
       .status(201)
@@ -2483,5 +2290,193 @@ export const syncCallLogs = async (req, res) => {
     return res.status(500).json({
       message: "Sync failed",
     });
+  }
+};
+
+
+//deal closing controllers 
+
+// ─── Close a Deal ─────────────────────────────────────────────────────────────
+export const closeDeal = async (req, res, next) => {
+  try {
+    const admin = req.admin;
+    const { id } = req.params;
+
+    // check customer exists
+    const customer = await prisma.customer.findUnique({ where: { id } });
+    if (!customer) return res.status(404).json({ success: false, message: "Customer not found" });
+
+    // role-based access — only allow if admin created it, assigned to it, or is administrator
+    const adminId = admin.id || admin._id;
+    const isAdministrator = admin.role === "administrator";
+    const isCreator = customer.CreatedById === adminId;
+    const isAssigned = await prisma.customer.findFirst({
+      where: {
+        id,
+        AssignTo: { some: { id: adminId } }
+      }
+    });
+
+    if (!isAdministrator && !isCreator && !isAssigned) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    const updated = await prisma.customer.update({
+      where: { id },
+      data: {
+        DealClosed: true,
+        updatedAt: new Date(),
+      },
+    });
+
+    return res.status(200).json({ success: true, data: updated });
+
+  } catch (error) {
+    next(new ApiError(500, error.message));
+  }
+};
+
+
+// ─── Reopen a Deal (undo close) ───────────────────────────────────────────────
+export const reopenDeal = async (req, res, next) => {
+  try {
+    const admin = req.admin;
+    const { id } = req.params;
+
+    const customer = await prisma.customer.findUnique({ where: { id } });
+    if (!customer) return res.status(404).json({ success: false, message: "Customer not found" });
+
+    // only administrator can reopen
+    if (admin.role !== "administrator") {
+      return res.status(403).json({ success: false, message: "Only administrators can reopen deals" });
+    }
+
+    const updated = await prisma.customer.update({
+      where: { id },
+      data: {
+        DealClosed: false,
+        updatedAt: new Date(),
+      },
+    });
+
+    return res.status(200).json({ success: true, data: updated });
+
+  } catch (error) {
+    next(new ApiError(500, error.message));
+  }
+};
+
+
+// ─── Get Closed Deals ─────────────────────────────────────────────────────────
+export const getClosedDeals = async (req, res, next) => {
+  try {
+    const admin = req.admin;
+
+    const {
+      Campaign, City, Location, Keyword,
+      StartDate, EndDate,
+      Limit, Skip = 0,
+    } = req.query;
+
+    const offset = Number(Skip);
+    let AND = [{ DealClosed: true }]; // ← only closed deals
+
+    // ── Role-based access (same logic as getCustomer) ──────────────────────
+    if (admin.role !== "administrator" && admin.clientId) {
+      AND.push({
+        OR: [
+          { ClientId: admin.clientId },
+          { CreatedById: admin.id || admin._id }
+        ]
+      });
+    }
+
+    if (admin.role === "user") {
+      const adminId = admin.id || admin._id;
+      AND.push({
+        OR: [
+          { AssignTo: { some: { id: adminId } } },
+          { CreatedById: adminId }
+        ]
+      });
+    }
+
+    if (admin.role === "city_admin") {
+      AND.push({ City: { equals: admin.city } });
+    }
+
+    // ── Basic filters ──────────────────────────────────────────────────────
+    if (Campaign)  AND.push({ Campaign:  { contains: Campaign.trim()  } });
+    if (City)      AND.push({ City:      { contains: City.trim()      } });
+    if (Location)  AND.push({ Location:  { contains: Location.trim()  } });
+
+    // ── Keyword search ─────────────────────────────────────────────────────
+    if (Keyword) {
+      const tokens = Keyword.trim().split(" ").filter(Boolean);
+      const fields = ["customerName", "ContactNumber", "City", "Location", "Campaign", "Description"];
+
+      AND.push({
+        AND: tokens.map((t) => ({
+          OR: fields.map((field) => ({ [field]: { contains: t } })),
+        })),
+      });
+    }
+
+    const where = { AND };
+
+    // ── Total count ────────────────────────────────────────────────────────
+    const total = await prisma.customer.count({ where });
+
+    // ── Fetch ──────────────────────────────────────────────────────────────
+    let customers = await prisma.customer.findMany({
+      where,
+      orderBy: [
+        { updatedAt: "desc" },
+        { createdAt: "desc" },
+      ],
+      skip: offset,
+      take: Limit !== undefined ? Number(Limit) : undefined,
+      include: { AssignTo: true },
+    });
+
+    // ── Date range filter (same pattern as getCustomer) ────────────────────
+    if (StartDate && EndDate) {
+      const parseDMY = (str) => {
+        if (!str) return null;
+        const parts = str.split("-");
+        if (parts.length !== 3) return null;
+        let day, month, year;
+        if (parts[0].length === 4) [year, month, day] = parts.map(Number);
+        else [day, month, year] = parts.map(Number);
+        const d = new Date(year, month - 1, day);
+        d.setHours(0, 0, 0, 0);
+        return isNaN(d.getTime()) ? null : d;
+      };
+
+      const start = parseDMY(StartDate);
+      const end   = parseDMY(EndDate);
+
+      if (start && end) {
+        end.setHours(23, 59, 59, 999);
+        customers = customers.filter((c) => {
+          const d = parseDMY(c.CustomerDate);
+          return d && d >= start && d <= end;
+        });
+      }
+    }
+
+    // ── Transform ──────────────────────────────────────────────────────────
+    const transformed = await Promise.all(customers.map(transformGetCustomer));
+
+    return res.status(200).json({
+      success: true,
+      total,
+      count: transformed.length,
+      data: transformed,
+    });
+
+  } catch (error) {
+    console.log(" what/s this ",error)
+    next(new ApiError(500, error.message));
   }
 };

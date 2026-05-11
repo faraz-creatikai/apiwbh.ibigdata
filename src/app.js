@@ -43,17 +43,15 @@ import leadtypeRoutes from "./routes/route.leadtype.js";
 import airteliqCallRoutes from "./routes/route.airteliq.js";
 import socialContentRoutes from "./routes/route.socialContent.js";
 import propertyRoutes from "./routes/route.property.js";
+import socialAuthRoutes from "./routes/route.socialAuth.js";
+import notificationRoutes from "./routes/route.notification.js";
+import { ALLOWED_ORIGINS } from "./config/cors-origins.js";
 const app = express();
 app.use(cookieParser());
 
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "http://localhost:5678/",
-      "https://wbh.ibigdata.in",
-
-    ],
+    origin: ALLOWED_ORIGINS,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     credentials: true,
   })
@@ -101,7 +99,9 @@ app.use("/api/customerfieldlabels",customerFieldLabelRoutes)
 app.use("/api/aiagent",aiAgentRoutes)
 app.use("/api/airteliq", airteliqCallRoutes);
 app.use("/api/social-content", socialContentRoutes);
+app.use("/api/social-auth",socialAuthRoutes);
 app.use("/api/property", propertyRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 app.use(errorHandler);
 

@@ -186,14 +186,14 @@ export const sendWhatsAppByTemplate = async (req, res, next) => {
 };
 
 
-export const callCustomer = async (req,res,next) =>{
-  try{
-    const { customerNumber }=req.body;
+export const callCustomer = async (req, res, next) => {
+  try {
+    const { customerNumber } = req.body;
 
-    if(!customerNumber){
+    if (!customerNumber) {
       res.status(400).json({
-        success:false,
-        message:"please provide customer number"
+        success: false,
+        message: "please provide customer number"
       })
       return;
     }
@@ -201,12 +201,12 @@ export const callCustomer = async (req,res,next) =>{
 
     console.log(" making call to customer ", response);
     res.status(200).json({
-      success:true,
+      success: true,
       call: response
     })
   }
-  catch(err){
-     next(new ApiError(500, err.message));
+  catch (err) {
+    next(new ApiError(500, err.message));
   }
 }
 
