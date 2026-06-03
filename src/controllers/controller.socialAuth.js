@@ -824,6 +824,11 @@ export const disconnectInstagram = async (req, res) => {
             },
         });
 
+        // Clear caches
+        postCache.delete(`ig_live_posts_${userId}`);
+        postCache.delete(`ig_publish_${userId}`);
+        analyticsCache.delete(`ig_analytics_${userId}`);
+
         res.json({
             success: true,
             message: "Instagram disconnected successfully",
@@ -1093,6 +1098,10 @@ export const disconnectFacebook = async (req, res) => {
                 },
             },
         });
+
+        //clear cache
+        postCache.delete(`fb_live_posts_${userId}`);
+        analyticsCache.delete(`fb_analytics_${userId}`);
 
         res.json({
             success: true,
