@@ -5,7 +5,7 @@ import upload from "../config/multer.js";
 
 const socialAuthRoutes = express.Router();
 
-socialAuthRoutes.use(protectRoute);
+//socialAuthRoutes.use(protectRoute);
 
 
 
@@ -16,27 +16,27 @@ socialAuthRoutes.get("/meta-callback", metaCallback);
 
 
 //insta
-socialAuthRoutes.get("/get-instagram-posts", getInstagramLivePosts);
-socialAuthRoutes.get("/get-instagram-analytics", getInstagramAnalytics);
-socialAuthRoutes.delete("/disconnect-instagram", disconnectInstagram);
+socialAuthRoutes.get("/get-instagram-posts",protectRoute, getInstagramLivePosts);
+socialAuthRoutes.get("/get-instagram-analytics", protectRoute, getInstagramAnalytics);
+socialAuthRoutes.delete("/disconnect-instagram", protectRoute, disconnectInstagram);
 
-socialAuthRoutes.post("/schedule-instagram-post", upload.fields([
+socialAuthRoutes.post("/schedule-instagram-post",protectRoute, upload.fields([
     { name: "PostImage", maxCount: 5 },
 ]), scheduleInstagramPost)
 
-socialAuthRoutes.get("/scheduled-posts-data", getScheduledPosts);
+socialAuthRoutes.get("/scheduled-posts-data", protectRoute, getScheduledPosts);
 
 
 //facebook
-socialAuthRoutes.get("/get-facebook-posts", getFacebookLivePosts);
-socialAuthRoutes.get("/get-facebook-analytics", getFacebookAnalytics);
-socialAuthRoutes.delete("/disconnect-facebook", disconnectFacebook);
-socialAuthRoutes.post("/schedule-facebook-post", upload.fields([
+socialAuthRoutes.get("/get-facebook-posts", protectRoute, getFacebookLivePosts);
+socialAuthRoutes.get("/get-facebook-analytics", protectRoute, getFacebookAnalytics);
+socialAuthRoutes.delete("/disconnect-facebook", protectRoute, disconnectFacebook);
+socialAuthRoutes.post("/schedule-facebook-post", protectRoute, upload.fields([
     { name: "PostImage", maxCount: 5 },
 ]), scheduleFacebookPost)
 
 
-socialAuthRoutes.post("/auto-social-agent", upload.fields([
+socialAuthRoutes.post("/auto-social-agent", protectRoute, upload.fields([
     { name: "PostImage", maxCount: 5 },
 ]), runAutoSocialAgent);
 

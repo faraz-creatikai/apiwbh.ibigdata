@@ -21,6 +21,7 @@ import {
   getClosedDeals,
   closeDeal,
   reopenDeal,
+  getAllCustomers,
 } from "../controllers/controller.customer.js";
 
 import upload from "../config/multer.js";
@@ -48,6 +49,7 @@ customerRoutes.get("/getcalllogs",getCallLogs);
 customerRoutes.get("/get-call-report",getCallReport);
 customerRoutes.get("/data-mining", dataMining);
 customerRoutes.get("/", getCustomer);
+customerRoutes.get("/all",getAllCustomers)
 
 
 customerRoutes.post("/check-duplicates", checkDuplicateContacts);

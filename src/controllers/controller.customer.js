@@ -64,7 +64,7 @@ const transformGetCustomer = async (c) => {
   };
 
   // FIX: Prisma column is AssignToId, not AssignTo
-  const assignToDoc = c.AssignToId
+/*   const assignToDoc = c.AssignToId
     ? await prisma.admin.findUnique({
       where: { id: c.AssignToId },
       select: {
@@ -75,7 +75,7 @@ const transformGetCustomer = async (c) => {
         city: true,
       },
     })
-    : null;
+    : null; */
 
   return {
     ...base,
@@ -241,6 +241,97 @@ function deduplicateByContact(customers) {
 // ======================================================
 
 
+// 1. Create a simple global cache store right at the top of your file
+const customerCache = new Map();
+const CACHE_TIMEOUT = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+export const getAllCustomers = async (req, res, next) => {
+  try {
+    const admin = req.admin;
+    const adminId = admin.id || admin._id;
+
+    // ---------------------------------------------------------
+    // 2. CHECK LOCAL CACHE
+    // ---------------------------------------------------------
+    const cacheKey = `customers:${adminId}:${admin.role}`;
+    const cachedItem = customerCache.get(cacheKey);
+
+    // If cache exists and hasn't expired (under 5 minutes old), return it instantly!
+    if (cachedItem && (Date.now() - cachedItem.timestamp < CACHE_TIMEOUT)) {
+      return res.status(200).json(cachedItem.data);
+    }
+
+    // ---------------------------------------------------------
+    // 3. ISOLATED ROLE-BASED LOGIC
+    // ---------------------------------------------------------
+    let AND = [];
+
+    if (admin.role !== "administrator" && admin.clientId) {
+      AND.push({
+        OR: [
+          { ClientId: admin.clientId },
+          { CreatedById: adminId }
+        ]
+      });
+    }
+
+    if (admin.role === "user") {
+      AND.push({
+        OR: [
+          { AssignTo: { some: { id: adminId } } },
+          { CreatedById: adminId }
+        ]
+      });
+    } else if (admin.role === "city_admin") {
+      const assignedCampaignsData = await prisma.customer.findMany({
+        where: { AssignTo: { some: { id: adminId } } },
+        select: { Campaign: true },
+        distinct: ["Campaign"]
+      });
+
+      const assignedCampaigns = assignedCampaignsData
+        .map(c => c.Campaign)
+        .filter(Boolean);
+
+      AND.push({ City: { equals: admin.city } });
+
+      AND.push({
+        OR: [
+          { CreatedById: adminId },
+          { AssignTo: { some: { id: adminId } } },
+          ...(assignedCampaigns.length > 0 ? [{ Campaign: { in: assignedCampaigns } }] : []),
+        ]
+      });
+    }
+
+    const where = AND.length ? { AND } : {};
+
+    // ---------------------------------------------------------
+    // 4. FAST DATABASE FETCH & TRANSFORM
+    // ---------------------------------------------------------
+    const customers = await prisma.customer.findMany({
+      where,
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      include: { AssignTo: true },
+    });
+
+    const transformed = await Promise.all(customers.map(transformGetCustomer));
+
+    // ---------------------------------------------------------
+    // 5. SAVE TO CACHE FOR NEXT TIME
+    // ---------------------------------------------------------
+    customerCache.set(cacheKey, {
+      data: transformed,
+      timestamp: Date.now()
+    });
+
+    return res.status(200).json(transformed);
+
+  } catch (error) {
+    next(new ApiError(500, error.message));
+  }
+};
+
 // ------------------------------------------------------
 //               GET TODAY CUSTOMERS
 // ------------------------------------------------------
@@ -390,29 +481,10 @@ export const getCustomer = async (req, res, next) => {
     const admin = req.admin;
 
     const {
-      Campaign,
-      CustomerType,
-      CustomerSubType,
-      LeadTemperature,
-      StatusType,
-      City,
-      Location,
-      SubLocation,
-      LeadType,
-      Keyword,
-      SearchIn,
-      ReferenceId,
-      MinPrice,
-      MaxPrice,
-      Price,
-      isFavourite,
-      StartDate,
-      EndDate,
-      Limit,
-      Skip = 0,
-      sort,
-      User,
-      ContactNumber
+      Campaign, CustomerType, CustomerSubType, LeadTemperature, StatusType,
+      City, Location, SubLocation, LeadType, Keyword, SearchIn, ReferenceId,
+      MinPrice, MaxPrice, Price, isFavourite, StartDate, EndDate, Limit,
+      Skip = 0, sort, User, ContactNumber
     } = req.query;
 
     let AND = [];
@@ -420,7 +492,7 @@ export const getCustomer = async (req, res, next) => {
     const offset = Number(Skip);
 
     // --------------------------------------------
-    // ROLE-BASED FILTERS
+    // 1. ROLE-BASED FILTERS (Restored Exactly)
     // --------------------------------------------
     if (admin.role !== "administrator" && admin.clientId) {
       AND.push({
@@ -431,9 +503,6 @@ export const getCustomer = async (req, res, next) => {
       });
     }
 
-    // --------------------------------------------
-    // USER → ONLY DIRECT ASSIGNMENT (STRICT)
-    // --------------------------------------------
     if (admin.role === "user") {
       const adminId = admin.id || admin._id;
       AND.push({
@@ -442,11 +511,9 @@ export const getCustomer = async (req, res, next) => {
           { CreatedById: adminId }
         ]
       });
-    }
-    else if (admin.role === "city_admin") {
+    } else if (admin.role === "city_admin") {
       const adminId = admin.id || admin._id;
 
-      // Step 1: get campaigns (kept exactly as before)
       const assignedCampaignsData = await prisma.customer.findMany({
         where: { AssignTo: { some: { id: adminId } } },
         select: { Campaign: true },
@@ -457,24 +524,20 @@ export const getCustomer = async (req, res, next) => {
         .map(c => c.Campaign)
         .filter(Boolean);
 
-      // STEP 2: GLOBAL CITY FILTER (VERY IMPORTANT)
       AND.push({ City: { equals: admin.city } });
 
-      // STEP 3: ACCESS LOGIC
       AND.push({
         OR: [
           { CreatedById: adminId },
           { AssignTo: { some: { id: adminId } } },
-          ...(assignedCampaigns.length > 0
-            ? [{ Campaign: { in: assignedCampaigns } }]
-            : []),
-          {} // allow other city data even if not assigned/campaign
+          ...(assignedCampaigns.length > 0 ? [{ Campaign: { in: assignedCampaigns } }] : []),
+          {} 
         ]
       });
     }
 
     // --------------------------------------------
-    // BASIC FILTERS
+    // 2. BASIC FILTERS (Restored Exactly)
     // --------------------------------------------
     if (Campaign) AND.push({ Campaign: { contains: Campaign.trim() } });
     if (CustomerType) AND.push({ CustomerType: { contains: CustomerType.trim() } });
@@ -489,11 +552,7 @@ export const getCustomer = async (req, res, next) => {
     if (ReferenceId) AND.push({ ReferenceId: { contains: ReferenceId.trim() } });
     if (Price) AND.push({ Price: { contains: Price.trim() } });
 
-    // --------------------------------------------
-    // PRICE RANGE FILTER (MIN / MAX)
-    // --------------------------------------------
-    const cleanNumber = (val) =>
-      Number(String(val || "").replace(/[^0-9]/g, ""));
+    const cleanNumber = (val) => Number(String(val || "").replace(/[^0-9]/g, ""));
 
     if (MinPrice || MaxPrice) {
       const min = MinPrice ? cleanNumber(MinPrice) : null;
@@ -511,32 +570,23 @@ export const getCustomer = async (req, res, next) => {
     }
 
     // --------------------------------------------
-    // KEYWORD SEARCH
+    // 3. KEYWORD SEARCH (Restored Exactly)
     // --------------------------------------------
     const keyword = Keyword?.trim();
-
     if (keyword) {
       const { tokens, fields, priceRange } = await getKeywordSearchData(keyword);
-
-      console.log(" tokens are ", tokens, "  \n fields are : ", fields);
 
       if (tokens.length > 0) {
         AND.push({
           AND: tokens.map((t) => ({
-            OR: fields.map((field) => ({
-              [field]: { contains: t },
-            })),
+            OR: fields.map((field) => ({ [field]: { contains: t } })),
           })),
         });
       }
 
       if (priceRange?.min || priceRange?.max) {
-        const min = priceRange?.min !== null
-          ? Number(String(priceRange.min).replace(/[^0-9]/g, ""))
-          : null;
-        const max = priceRange?.max !== null
-          ? Number(String(priceRange.max).replace(/[^0-9]/g, ""))
-          : null;
+        const min = priceRange?.min !== null ? cleanNumber(priceRange.min) : null;
+        const max = priceRange?.max !== null ? cleanNumber(priceRange.max) : null;
 
         if (!isNaN(min) || !isNaN(max)) {
           AND.push({
@@ -555,56 +605,49 @@ export const getCustomer = async (req, res, next) => {
     if (sort?.toLowerCase() === "asc") {
       orderBy.push({ createdAt: "asc" });
     } else {
-      orderBy.push({ updatedAt: "desc" });
-      orderBy.push({ createdAt: "desc" });
+      orderBy.push({ updatedAt: "desc" }, { createdAt: "desc" });
     }
 
-// --------------------------------------------
-// MAIN FETCH — two strategies based on ContactNumber
-// --------------------------------------------
-let customers;
-let totalRecords;
+    // --------------------------------------------
+    // 4. MAIN FETCH (Restored Memory Slicing for Pagination logic)
+    // --------------------------------------------
+    let customers;
+    let totalRecords;
 
-if (!ContactNumber) {
-  // Step 1: all distinct IDs only — lightweight
-  const allDistinctIds = await prisma.customer.findMany({
-    where,
-    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
-    distinct: ["ContactNumber"],
-    select: { id: true },
-  });
+    if (!ContactNumber) {
+      // Optimization: we only ask Prisma for the ID, saving significant RAM over large datasets
+      const allDistinctIds = await prisma.customer.findMany({
+        where,
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        distinct: ["ContactNumber"],
+        select: { id: true }, 
+      });
 
-  totalRecords = allDistinctIds.length;
+      totalRecords = allDistinctIds.length;
 
-  // Step 2: paginate in JS only if Limit was actually provided
-  const pageIds = Limit !== undefined
-    ? allDistinctIds.slice(offset, offset + REQUIRED).map(r => r.id)
-    : allDistinctIds.slice(offset).map(r => r.id); // ← no upper bound when no Limit
+      const pageIds = Limit !== undefined
+        ? allDistinctIds.slice(offset, offset + REQUIRED).map(r => r.id)
+        : allDistinctIds.slice(offset).map(r => r.id);
 
-  // Step 3: full fetch for just the page
-  customers = await prisma.customer.findMany({
-    where: { id: { in: pageIds } },
-    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
-    include: { AssignTo: true },
-  });
+      customers = await prisma.customer.findMany({
+        where: { id: { in: pageIds } },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        include: { AssignTo: true },
+      });
+    } else {
+      totalRecords = await prisma.customer.count({ where });
 
-} else {
-  // Normal flow when filtering by ContactNumber
-  totalRecords = await prisma.customer.count({ where });
-
-  customers = await prisma.customer.findMany({
-    where,
-    orderBy,
-    skip: offset,
-    ...(Limit !== undefined && { take: REQUIRED }), // ← only apply take if Limit given
-    include: { AssignTo: true },
-  });
-}
+      customers = await prisma.customer.findMany({
+        where,
+        orderBy,
+        skip: offset,
+        ...(Limit !== undefined && { take: REQUIRED }),
+        include: { AssignTo: true },
+      });
+    }
 
     // --------------------------------------------
-    // POST-FETCH FILTER + SORT BY CustomerDate
-    // Kept in JS because CustomerDate is stored as String
-    // in mixed dd-mm-yyyy / yyyy-mm-dd formats
+    // 5. POST-FETCH CUSTOMER DATE FILTER (Restored Exactly)
     // --------------------------------------------
     if (StartDate && EndDate) {
       const parseDMY = (str) => {
@@ -614,9 +657,9 @@ if (!ContactNumber) {
 
         let day, month, year;
         if (parts[0].length === 4) {
-          [year, month, day] = parts.map(Number); // yyyy-mm-dd
+          [year, month, day] = parts.map(Number);
         } else {
-          [day, month, year] = parts.map(Number); // dd-mm-yyyy
+          [day, month, year] = parts.map(Number);
         }
 
         const d = new Date(year, month - 1, day);
@@ -630,13 +673,11 @@ if (!ContactNumber) {
       if (start && end) {
         end.setHours(23, 59, 59, 999);
 
-        // 1️⃣ FILTER FIRST
         customers = customers.filter((c) => {
           const d = parseDMY(c.CustomerDate);
           return d && d >= start && d <= end;
         });
 
-        // 2️⃣ STRICT DESC SORT by CustomerDate
         customers.sort((a, b) => {
           const aTime = parseDMY(a.CustomerDate)?.getTime() || 0;
           const bTime = parseDMY(b.CustomerDate)?.getTime() || 0;
@@ -646,12 +687,12 @@ if (!ContactNumber) {
     }
 
     // --------------------------------------------
-    // FILTER BY USER (name / email / role / city)
-    // Post-fetch because it filters on relation data
+    // 6. POST-FETCH USER FILTER (Restored Exactly)
     // --------------------------------------------
     if (User) {
       const userLower = User.toLowerCase();
 
+      // Optimization: Fetch only IDs of matching admins
       const admins = await prisma.admin.findMany({
         where: {
           OR: [
@@ -672,20 +713,21 @@ if (!ContactNumber) {
         (c) => c.AssignTo?.some(a => allowedIds.includes(a.id))
       );
 
-      // Sort preserved as original
       filtered.sort((a, b) => {
         const aTime = new Date(a.updatedAt || a.createdAt).getTime();
         const bTime = new Date(b.updatedAt || b.createdAt).getTime();
         return bTime - aTime;
       });
 
+      // CRITICAL FIX: Restored await Promise.all()
       const transformed = await Promise.all(filtered.map(transformGetCustomer));
       return res.status(200).json(transformed);
     }
 
     // --------------------------------------------
-    // FINAL TRANSFORM
+    // 7. FINAL TRANSFORM (CRITICAL FIX)
     // --------------------------------------------
+    // CRITICAL FIX: Restored await Promise.all() here as well
     const transformed = await Promise.all(customers.map(transformGetCustomer));
     res.status(200).json(transformed);
 

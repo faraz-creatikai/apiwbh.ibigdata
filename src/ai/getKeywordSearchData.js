@@ -44,32 +44,32 @@ export async function getKeywordSearchData(keyword) {
 }
 
 
-export async function getRecommendedKeywordSearchData(keyword,customer,
+export async function getRecommendedKeywordSearchData(keyword, customer,
   followups) {
   try {
 
     const userMessage = {
-  customer: {
-    name: customer.customerName,
-    description: customer.Description,
-    price: customer.PriceNumber,
-    city: customer.City,
-    location: customer.Location,
-    sublocation: customer.SubLocation,
-    campaign: customer.Campaign,
-    customertype: customer.CustomerType,
-    customersubtype: customer.CustomerSubType
-  },
-  followups: followups.map((f) => ({
-    description: f.Description,
-    startdate: f.StartDate,
-    followupNextDate: f.FollowupNextDate,
-    status: f.Status,
-  })),
-  userPrompt: keyword
-};
+      customer: {
+        name: customer.customerName,
+        description: customer.Description,
+        price: customer.PriceNumber,
+        city: customer.City,
+        location: customer.Location,
+        sublocation: customer.SubLocation,
+        campaign: customer.Campaign,
+        customertype: customer.CustomerType,
+        customersubtype: customer.CustomerSubType
+      },
+      followups: followups.map((f) => ({
+        description: f.Description,
+        startdate: f.StartDate,
+        followupNextDate: f.FollowupNextDate,
+        status: f.Status,
+      })),
+      userPrompt: keyword
+    };
 
-console.log(" userMessage ", userMessage)
+    console.log(" userMessage ", userMessage)
     const aiResult = await PropertyRecommendationAgent(userMessage);
     console.log(" data ", aiResult)
     if (

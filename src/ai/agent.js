@@ -6,6 +6,7 @@ import { followupPrompt } from "./prompts/followupPrompt.js";
 import { keywordSearchPrompt } from "./prompts/keywordSearchPrompt.js";
 import { propertyRecommendationPrompt } from "./prompts/propertyRecommendationPrompt.js";
 import { qualifyCustomerPrompt } from "./prompts/qualifyCustomerPrompt.js";
+import { scriptGenerationPrompt } from "./prompts/scriptGenerationPrompt.js";
 import { socialAgentPrompt } from "./prompts/socialAgentPrompt.js";
 
 
@@ -260,6 +261,48 @@ ${JSON.stringify(userPrompt, null, 2)}`
     throw new Error("Invalid AI response format");
   }
 
+  return safeJsonParse(jsonMatch[0]);
+}
+
+// Added 'mode' as the third parameter with a default value
+export async function ScriptGenerationAgent(userPrompt, customerContext = {}, mode = "hindi") {
+  // Construct the payload dynamically
+  const payload = {
+    userPrompt: userPrompt,
+    mode: mode, // Provide the mode to the AI so it knows which language to output
+    // Only include customer/followups if they exist in the context
+    ...(customerContext.customer && { customer: customerContext.customer }),
+    ...(customerContext.followups && { followups: customerContext.followups }),
+  };
+
+  const response = await gemini.models.generateContent({
+    model: "models/gemini-2.5-flash-lite",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `${scriptGenerationPrompt}\nDATA:\n${JSON.stringify(payload, null, 2)}`
+          }
+        ]
+      }
+    ],
+  });
+
+  const raw = response?.text;
+
+  if (!raw || !raw.trim()) {
+    throw new Error("AI returned empty response");
+  }
+
+  // Extract JSON safely
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+
+  if (!jsonMatch) {
+    throw new Error("Invalid AI response format");
+  }
+
+  // Assuming safeJsonParse is a utility function you have defined elsewhere
   return safeJsonParse(jsonMatch[0]);
 }
 
