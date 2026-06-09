@@ -367,7 +367,7 @@ export const metaCallback = async (req, res) => {
         // =========================
         // 8. Redirect to frontend
         // =========================
-        res.redirect("https://wbh.ibigdata.in/socialmedia-manager");
+        res.redirect("https://edu.ibigdata.in/socialmedia-manager");
     } catch (err) {
         console.error("❌ OAuth Error:", err);
         res.status(500).json({
