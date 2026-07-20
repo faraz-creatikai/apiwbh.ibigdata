@@ -20,46 +20,56 @@ const transformType = (type) => ({
   updatedAt: type.updatedAt,
 });
 
+const typeCache = new Map();
+
+// Cache TTL: 5 minutes
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
 // ---------------------------------------------------
 //  GET ALL TYPES
 // ---------------------------------------------------
 export const getType = async (req, res, next) => {
   try {
     const { keyword, limit, campaignId } = req.query;
+    const now = Date.now();
 
-    let where = {};
+    // 1. Query-Aware Cache Key
+    const cacheKey = JSON.stringify({ keyword, limit, campaignId });
 
-    if (campaignId) {
-      where.campaignId = campaignId;
+    if (typeCache.has(cacheKey)) {
+      const cached = typeCache.get(cacheKey);
+      if (cached.expiry > now) return res.status(200).json(cached.data);
+      typeCache.delete(cacheKey);
     }
 
+    // 2. Build Query
+    let where = {};
+    if (campaignId) where.campaignId = campaignId;
     if (keyword) {
-      where.Name = {
-        contains: keyword.trim(),
-        mode: "insensitive",
-      };
+      where.Name = { contains: keyword.trim(), mode: "insensitive" };
     }
 
     const types = await prisma.type.findMany({
       where,
       include: {
-        Campaign: {
-          select: {
-            id: true,
-            Name: true,
-          },
-        },
+        Campaign: { select: { id: true, Name: true } },
       },
       orderBy: { Name: "asc" },
       take: limit ? Number(limit) : undefined,
     });
 
-    res.status(200).json(types.map(transformType));
+    // 3. Concurrent Transformation
+    const transformedTypes = await Promise.all(types.map(transformType));
+
+    // 4. Update Cache
+    typeCache.set(cacheKey, { data: transformedTypes, expiry: now + CACHE_TTL_MS });
+    if (typeCache.size > 100) typeCache.delete(typeCache.keys().next().value);
+
+    return res.status(200).json(transformedTypes);
   } catch (error) {
     next(new ApiError(500, error.message));
   }
 };
-
 // ---------------------------------------------------
 //  GET TYPE BY ID
 // ---------------------------------------------------

@@ -6,7 +6,7 @@ dotenv.config();
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: process.env.SMTP_PORT || 587,
-  secure: false, // use true for 465
+  secure: true, // use true for 465
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
@@ -17,7 +17,7 @@ const transporter = nodemailer.createTransport({
 const smtpTransporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: process.env.SMTP_PORT || 587,
-  secure: false,
+  secure: true,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
@@ -83,6 +83,7 @@ export const sendSystemEmail = async (to, userName, password, role) => {
         <p>Best Regards,<br/><b>Admin Team</b></p>
       </div>
     `;
+    
 
     const mailOptions = {
       from: `"System Notification" <${process.env.SMTP_USER}>`,
@@ -90,6 +91,7 @@ export const sendSystemEmail = async (to, userName, password, role) => {
       subject,
       html,
     };
+    
 
     const info = await smtpTransporter.sendMail(mailOptions);
     console.log("✅ System email sent:", info.response);

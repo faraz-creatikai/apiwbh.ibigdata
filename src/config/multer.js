@@ -28,4 +28,25 @@ const upload = multer({
   },
 });
 
+// 👇 NEW: separate instance for Template uploads (whatsapp image/video/document
+// + mail image). Reuses the same disk storage/filename logic above, so nothing
+// about where files land or how they're named changes — only which extensions
+// are accepted, and only on the routes that opt into this instance.
+const templateUpload = multer({
+  storage,
+  limits: { fileSize: 25 * 1024 * 1024 }, // raised for video/document templates
+  fileFilter: (req, file, cb) => {
+    const allowed = /jpg|jpeg|png|webp|gif|mp4|mov|webm|pdf|doc|docx|xls|xlsx/;
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.test(ext)) cb(null, true);
+    else
+      cb(
+        new Error(
+          "Unsupported file type. Allowed: images (jpg/jpeg/png/webp/gif), video (mp4/mov/webm), or documents (pdf/doc/docx/xls/xlsx)."
+        )
+      );
+  },
+});
+
 export default upload;
+export { templateUpload };

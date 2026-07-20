@@ -4,18 +4,62 @@ import ApiError from "../utils/ApiError.js";
 
 const prisma = new PrismaClient();
 
-// ------------------- PROTECT ROUTE -------------------
-export const protectRoute = async (req, res, next) => {
+
+
+ export const protectRoute = async (req, res, next) => {
   try {
+    // 1. Look for headers
+    const apiKey = req.headers["x-api-key"];
     const token = req.headers.token || req.cookies.token;
 
-    if (!token) {
-      throw new ApiError(401, "Access denied. No token provided");
+    if (!apiKey && !token) {
+      throw new ApiError(401, "Access denied. No API key or token provided");
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // FLOW A: API KEY AUTHENTICATION (Permanent/Long-lived)
+    // ─────────────────────────────────────────────────────────────────
+    if (apiKey) {
+      const apiKeyRecord = await prisma.cRMApiKey.findUnique({
+        where: { key: apiKey },
+        include: {
+          admin: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              role: true,
+              city: true,
+              phone: true,
+              status: true,
+              clientId: true,
+              AddressLine1: true,
+              AddressLine2: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          },
+        },
+      });
+
+      if (!apiKeyRecord || !apiKeyRecord.admin) {
+        throw new ApiError(401, "Invalid API Key");
+      }
+
+      if (apiKeyRecord.admin.status === "inactive") {
+        throw new ApiError(403, "Account has been deactivated");
+      }
+
+      // Attach admin to request and proceed
+      req.admin = apiKeyRecord.admin;
+      return next(); 
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FLOW B: JWT AUTHENTICATION (Session-based)
+    // ─────────────────────────────────────────────────────────────────
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Prisma equivalent of findById + select -password
     const admin = await prisma.admin.findUnique({
       where: { id: decoded.userId },
       select: {
@@ -26,14 +70,9 @@ export const protectRoute = async (req, res, next) => {
         city: true,
         phone: true,
         status: true,
-        clientId:true,
-        createdPropertys:true,
-        createdCustomers:true,
-        createdFollowups:true,
+        clientId: true,
         AddressLine1: true,
         AddressLine2: true,
-        assignedAIAgents: true,
-        createdBy: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -48,27 +87,86 @@ export const protectRoute = async (req, res, next) => {
     }
 
     req.admin = admin;
-    next();
+    return next();
+
   } catch (error) {
-    console.log(error.message);
-
     if (error instanceof ApiError) {
-      return res
-        .status(error.statusCode)
-        .json({ success: false, message: error.message });
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-
     if (error.name === "JsonWebTokenError") {
       return res.status(401).json({ success: false, message: "Invalid token" });
     }
-
     if (error.name === "TokenExpiredError") {
       return res.status(401).json({ success: false, message: "Token expired" });
     }
-
     return res.status(500).json({ success: false, message: error.message });
   }
-};
+}; 
+
+// ------------------- PROTECT ROUTE -------------------
+// ------------------- PROTECT ROUTE -------------------
+
+//old protect route without apikey
+/* export const protectRoute = async (req, res, next) => {
+  try {
+    const token = req.headers.token || req.cookies.token;
+
+    if (!token) {
+      throw new ApiError(401, "Access denied. No token provided");
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // 🚀 OPTIMIZED: Only select scalar fields, no relational arrays!
+    const admin = await prisma.admin.findUnique({
+      where: { id: decoded.userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        city: true,
+        phone: true,
+        status: true,
+        clientId: true,
+        AddressLine1: true,
+        AddressLine2: true,
+        createdAt: true,
+        updatedAt: true,
+        
+        // If you absolutely NEED to know how many they created in the UI context, 
+        // use _count, never true.
+        // _count: {
+        //   select: { createdCustomers: true, createdFollowups: true }
+        // }
+      },
+    });
+
+    if (!admin) {
+      throw new ApiError(404, "Admin not found");
+    }
+
+    if (admin.status === "inactive") {
+      throw new ApiError(403, "Account has been deactivated");
+    }
+
+    req.admin = admin;
+    next();
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ success: false, message: "Invalid token" });
+    }
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({ success: false, message: "Token expired" });
+    }
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}; */
+
+
 
 // Check if user is administrator
 export const isAdministrator = (req, res, next) => {

@@ -47,6 +47,8 @@ model Admin {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   scheduledPosts ScheduledPost[]
+  adminAiApiKeys AdminAiApiKey[]
+  crmApiKeys     CRMApiKey[]
 }
 
 enum Role {
@@ -59,6 +61,16 @@ enum Role {
 enum AdminStatus {
   active
   inactive
+}
+
+enum AIProvider {
+  OPENAI
+  GEMINI
+  ANTHROPIC
+  GOOGLE
+  MISTRAL
+  GROQ
+  CUSTOM
 }
 
 model Campaign {
@@ -74,6 +86,11 @@ model Campaign {
 enum Status {
   Active
   Inactive
+}
+
+enum NormalStatus {
+  ACTIVE
+  INACTIVE
 }
 
 model Type {
@@ -269,17 +286,27 @@ model PaymentMethod {
 }
 
 model Template {
-  id            String   @id @default(uuid())
-  name          String   @unique
+  id            String @id @default(uuid())
+  name          String @unique
   type          String // email | whatsapp
-  subject       String   @default("")
-  body          String   @db.LongText
-  description   String   @default("")
-  whatsappImage Json?    @default("[]")
-  createdBy     String   @default("system")
-  status        String   @default("Active") // Active | Inactive
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  subject       String @default("")
+  body          String @db.LongText
+  description   String @default("")
+  whatsappImage Json?  @default("[]")
+  createdBy     String @default("system")
+  status        String @default("Active") // Active | Inactive
+
+  whatsappMediaType   String? @default("image") // image | video | document | none
+  whatsappFileName    String? @default("") // shown as filename when mediaType = document
+  whatsappLinkPreview Json?   @default("null") // { title, body, thumbnailUrl, sourceUrl }
+  whatsappLocation    Json?   @default("null") // { lat, lng, name, address }
+  whatsappPoll        Json?   @default("null") // { name, options: [], selectableCount }
+  variables           Json?   @default("[]") // e.g. ["customerName","amount"] — useful for email too, as a "available merge tags" hint in your UI
+  category            String? @default("") // free-text grouping, e.g. "marketing" / "reminder" — just metadata
+  
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model IncomeMarketing {
@@ -364,6 +391,32 @@ model BuilderSlider {
   updatedAt DateTime @updatedAt
 }
 
+model PropertyShortlist {
+  id String @id @default(uuid())
+
+  // 1. The Demand: The customer who is looking (e.g., The Buyer)
+  customerId String
+  customer   Customer @relation("CustomerShortlist", fields: [customerId], references: [id], onDelete: Cascade)
+
+  // 2. The Supply: The property/lead being saved (e.g., The Seller)
+  propertyId String
+  property   Customer @relation("PropertyShortlist", fields: [propertyId], references: [id], onDelete: Cascade)
+
+  // 3. Status Tracking
+  // e.g., "shortlisted", "contacted", "site_visit", "rejected"
+  status String @default("shortlisted")
+
+  // 4. Audit Trail
+  savedById String? // Which admin/user clicked 'Save'?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Prevent an admin from saving the exact same property twice for the same customer
+  @@unique([customerId, propertyId])
+  @@index([customerId])
+  @@index([propertyId])
+}
+
 model Customer {
   id              String  @id @default(uuid())
   Campaign        String? @default("")
@@ -417,6 +470,12 @@ model Customer {
   updatedAt  DateTime
   followups  Followup[]
   callLogs   CallLog[]
+
+  // Properties this customer has been shortlisted for (If this customer is a Buyer)
+  shortlistedProperties PropertyShortlist[] @relation("CustomerShortlist")
+
+  // Customers who have shortlisted this property (If this customer is a Seller)
+  shortlistedBy PropertyShortlist[] @relation("PropertyShortlist")
 
   // INDEXES (put here at bottom)
   @@index([ContactNumber])
@@ -556,6 +615,104 @@ model AIAgent {
   AssignTo Admin[] @relation("AIAgentAssignedTo")
 
   createdAt DateTime @default(now())
+
+  promptRole String? @db.LongText
+
+  // OPTIONAL WEBHOOK CONFIGURATIONS
+  webhookUrl     String?
+  webhookMethod  String? @default("POST")
+  webhookHeaders Json? // Stores dynamic headers like {"Authorization": "Bearer ..."}
+  webhookPayload Json? // Stores dynamic base payloads like {"api_key": "..."}
+
+  // Relational arrays
+  campaignRuns AgentCampaignRun[]
+  logs         AgentExecutionLog[]
+}
+
+// =================================================================
+// 🤖 CAMPAIGN EXECUTION MODELS
+// =================================================================
+
+model AgentCampaignRun {
+  id           String    @id @default(uuid())
+  agentId      String
+  campaignId   String // Reference to your existing Campaign model ID
+  status       RunStatus @default(planning)
+  strategyText String?   @db.LongText // The AI's generated plan
+  targetCount  Int       @default(0) // How many leads are being targeted
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  agent  AIAgent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  assets CampaignAsset[]
+  logs   AgentExecutionLog[]
+
+  @@index([agentId])
+  @@index([campaignId])
+}
+
+model CampaignAsset {
+  id               String         @id @default(uuid())
+  campaignRunId    String
+  customerId       String // Reference to your existing Customer model ID
+  channel          ChannelType
+  generatedContent String         @db.LongText
+  approvalStatus   ApprovalStatus @default(pending) // Human-in-the-loop gate
+  sentAt           DateTime?
+  errorLog         String?        @db.LongText
+
+  // Relations
+  campaignRun AgentCampaignRun @relation(fields: [campaignRunId], references: [id], onDelete: Cascade)
+
+  @@index([campaignRunId])
+  @@index([customerId])
+}
+
+model AgentExecutionLog {
+  id            String   @id @default(uuid())
+  agentId       String
+  campaignRunId String?
+  level         LogLevel @default(info)
+  message       String   @db.LongText
+  createdAt     DateTime @default(now())
+
+  // Relations
+  agent       AIAgent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  campaignRun AgentCampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
+
+  @@index([agentId])
+  @@index([campaignRunId])
+}
+
+// =================================================================
+// ENUMS FOR CAMPAIGN EXECUTION
+// =================================================================
+
+enum RunStatus {
+  planning
+  pending_approval
+  executing
+  completed
+  failed
+}
+
+enum ChannelType {
+  email
+  sms
+  whatsapp
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+enum LogLevel {
+  info
+  warning
+  error
 }
 
 model CallLog {
@@ -808,4 +965,33 @@ model SalesScript {
   metadata  Json?    @default("{}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model AdminAiApiKey {
+  id       String     @id @default(uuid())
+  provider AIProvider // Re-use your enum (OPENAI, GEMINI, etc.)
+  apiKey   String     @db.Text // Store ENCRYPTED
+  model    String
+
+  status NormalStatus @default(ACTIVE)
+
+  adminId String
+  admin   Admin  @relation(fields: [adminId], references: [id]) // Assumes you have a User model
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // This ensures a user can only have ONE master key per provider
+  @@unique([adminId, provider])
+}
+
+model CRMApiKey {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  name      String? // e.g., "Zapier Integration", "Personal Mac Script"
+  adminId   String
+  admin     Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([adminId])
 }

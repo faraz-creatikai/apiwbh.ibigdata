@@ -5,6 +5,7 @@ import { genrateToken } from "../config/adminjwt.js";
 import { sendSystemEmail } from "../config/mailer.js";
 import cloudinary from "../config/cloudinary.js";
 import fs from "fs";
+import crypto from "crypto";
 
 // Helper to keep _id like MongoDB
 const transform = (admin) => {
@@ -441,6 +442,7 @@ export const updateAdminDetails = async (req, res) => {
 
     if (req.body.name) updates.name = req.body.name;
     if (req.body.company) updates.company = req.body.company;
+    if (req.body.city) updates.city = req.body.city;
     if (req.body.AddressLine1) updates.AddressLine1 = req.body.AddressLine1;
     if (req.body.AddressLine2) updates.AddressLine2 = req.body.AddressLine2;
 
@@ -769,36 +771,42 @@ export const getAdminById = async (req, res) => {
     const targetAdminId = req.params.id;
     const currentAdmin = req.admin;
 
+    // 1. FAST-FAIL: If it's a regular user asking for someone else's ID, 
+    // block them instantly BEFORE making an expensive database query.
+    if (currentAdmin.role === "user" && targetAdminId !== currentAdmin.id) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    // 2. Fetch the data (findUnique is naturally O(1) fast on indexed IDs)
     const targetAdmin = await prisma.admin.findUnique({
       where: { id: targetAdminId },
-      include: { assignedAIAgents: true }
+      include: { assignedAIAgents: true } // Preserved to keep your exact UI data shape
     });
 
-    if (!targetAdmin) throw new ApiError(404, "Admin not found");
+    if (!targetAdmin) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
 
-    if (currentAdmin.role === "administrator") {
-    } else if (currentAdmin.role === "city_admin") {
-      if (
-        targetAdmin.id !== currentAdmin.id &&
-        (targetAdmin.role !== "user" || targetAdmin.city !== currentAdmin.city)
-      ) {
-        throw new ApiError(403, "Access denied");
-      }
-    } else if (currentAdmin.role === "user") {
-      if (targetAdmin.id !== currentAdmin.id) {
-        throw new ApiError(403, "Access denied");
+    // 3. POST-FETCH RBAC: Specific checks for city_admin
+    if (currentAdmin.role === "city_admin") {
+      const isSelf = targetAdmin.id === currentAdmin.id;
+      const isSubordinateInCity = targetAdmin.role === "user" && targetAdmin.city === currentAdmin.city;
+
+      if (!isSelf && !isSubordinateInCity) {
+        return res.status(403).json({ success: false, message: "Access denied" });
       }
     }
 
-    res.json({
+    // 4. Return exact same payload structure
+    return res.status(200).json({
       success: true,
       adminData: transform(targetAdmin),
     });
+
   } catch (error) {
-    console.log(error.message);
-    res
-      .status(error instanceof ApiError ? error.statusCode : 500)
-      .json({ success: false, message: error.message });
+    // Only catch true internal crashes here, not standard access denials
+    console.error("getAdminById Error:", error.message);
+    return res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
 
@@ -843,5 +851,176 @@ export const deleteAdmin = async (req, res) => {
     res
       .status(error instanceof ApiError ? error.statusCode : 500)
       .json({ success: false, message: error.message });
+  }
+};
+
+
+export const getMyActiveAgents = async (req, res, next) => {
+  try {
+    const currentAdmin = req.admin; // Populated by your protectRoute middleware
+    const isAdmin = currentAdmin.role === "administrator";
+
+    // 1. Build the ultra-lean query
+    const query = {
+      where: {
+        status: "Active", // 🚀 DB-level filtering (Frontend no longer needs .filter())
+      },
+      // 🚀 Select ONLY the fields your AIAgent interface actually uses.
+      // Skipping heavy fields like `promptRole` (LongText) or Webhook JSON 
+      // makes the payload microscopic and lightning fast.
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        type: true,
+        status: true,
+        campaign: true,
+        targetSegment: true,
+        capability: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "desc" }
+    };
+
+    // 2. If it's a regular user, strictly filter to ONLY agents assigned to them
+    if (!isAdmin) {
+      query.where.AssignTo = {
+        some: { id: currentAdmin.id }
+      };
+    }
+
+    // 3. Execute the direct fetch
+    const agents = await prisma.aIAgent.findMany(query);
+
+    // 4. Return the optimized payload
+    return res.status(200).json({
+      success: true,
+      data: agents
+    });
+
+  } catch (error) {
+    console.error("getMyActiveAgents Error:", error.message);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
+
+
+
+
+
+export const generateApiKey = async (req, res, next) => {
+  try {
+    const adminId = req.admin.id;
+    const { keyName } = req.body; // e.g., "Zapier Integration"
+
+    if (!keyName) {
+      throw new ApiError(400, "Please provide a name for this API key");
+    }
+
+    // 1. Generate a secure random key
+    // Creates a string like: crm_4f8a9b2...
+    const rawKey = "crm_" + crypto.randomBytes(32).toString("hex");
+
+    // 2. Save it to the database
+    const newApiKey = await prisma.cRMApiKey.create({
+      data: {
+        key: rawKey,
+        name: keyName,
+        adminId: adminId,
+      },
+    });
+
+    // 3. Return the key to the user
+    return res.status(201).json({
+      success: true,
+      message: "API Key generated successfully",
+      data: {
+        id: newApiKey.id,
+        name: newApiKey.name,
+        key: rawKey,
+        createdAt: newApiKey.createdAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+
+export const deleteApiKey = async (req, res, next) => {
+  try {
+    const adminId = req.admin.id; // From your protectRoute middleware
+    const { keyId } = req.params; // The ID of the key they want to delete
+
+    // 1. SECURITY CHECK: Verify the key exists AND belongs to this exact admin
+    const existingKey = await prisma.cRMApiKey.findFirst({
+      where: {
+        id: keyId,
+        adminId: adminId,
+      },
+    });
+
+    if (!existingKey) {
+      throw new ApiError(404, "API Key not found or you do not have permission to delete it");
+    }
+
+    // 2. Delete the key
+    await prisma.apiKey.delete({
+      where: {
+        id: keyId
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "API Key revoked and deleted successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+export const getApiKeys = async (req, res, next) => {
+  try {
+    const adminId = req.admin.id;
+
+    // 1. Fetch all keys belonging to this specific admin
+    const apiKeys = await prisma.cRMApiKey.findMany({
+      where: {
+        adminId: adminId
+      },
+      select: {
+        id: true,
+        name: true,
+        key: true,
+        createdAt: true,
+      },
+      orderBy: {
+        createdAt: "desc" // Newest keys first
+      },
+    });
+
+    // 2. Mask the keys for frontend display security
+    // Converts "crm_4f8a9b2c1d3e..." into "crm_4f8a********************"
+    const maskedKeys = apiKeys.map((record) => {
+      return {
+        id: record.id,
+        name: record.name,
+        createdAt: record.createdAt,
+        key: record.key.substring(0, 8) + "************************",
+      };
+    });
+
+    // 3. Return the masked list
+    return res.status(200).json({
+      success: true,
+      message: "API Keys retrieved successfully",
+      data: maskedKeys,
+    });
+  } catch (error) {
+    next(error);
   }
 };

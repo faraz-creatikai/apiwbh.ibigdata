@@ -8,6 +8,7 @@ import { startCallLogSync, syncCallLogsInternal } from "./jobs/syncCallLogs.js";
 import { initFacebookCron, initInstagramCron } from "./jobs/instagramScheduler.js";
 import { initSocket } from "./socket/socket.js";
 import { deleteOldNotifications, initFollowupNotificationCron } from "./jobs/notification/notificationEvents.js";
+import { initWhatsApp } from "./config/baileys.js";
 
 
 const PORT = process.env.PORT || 5000;
@@ -16,7 +17,7 @@ const PORT = process.env.PORT || 5000;
 const server = createServer(app);
 initSocket(server);
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
 
   startCallLogSync(); // ← replaces the entire setInterval block
@@ -24,6 +25,7 @@ server.listen(PORT, () => {
   initInstagramCron();
   initFacebookCron();
   initFollowupNotificationCron();
+ // await initWhatsApp();
 
   setInterval(async () => {
     try { await deleteOldNotifications(); }

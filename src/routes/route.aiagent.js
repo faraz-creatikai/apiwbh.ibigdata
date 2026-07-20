@@ -6,7 +6,7 @@ import { validate } from "../middlewares/validate.js";
 
 import { isAdministrator, protectRoute } from "../middlewares/auth.js";
 import { createAIAgentValidator, updateAIAgentValidator } from "../validators/aiagentValidator.js";
-import { assignAIAgent, createAIAgent, deleteAIAgent, getAIAgentById, getAIAgents, updateAIAgent } from "../controllers/controller.aiagent.js";
+import { assignAIAgent, compareProductPrice, createAIAgent, deleteAIAgent, getAIAgentById, getAIAgents, runWebhookAgent, updateAIAgent } from "../controllers/controller.aiagent.js";
 
 const aiAgentRoutes = express.Router();
 
@@ -40,5 +40,9 @@ aiAgentRoutes.post("/assign", assignAIAgent);
 
 // DELETE AGENT
 aiAgentRoutes.delete("/:id", isAdministrator, deleteAIAgent);
+
+aiAgentRoutes.post("/run-webhook-agent", runWebhookAgent);
+aiAgentRoutes.post("/compare-product-price",compareProductPrice);
+
 
 export default aiAgentRoutes;

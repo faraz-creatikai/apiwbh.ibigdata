@@ -26,6 +26,12 @@ const transformSubLocation = (loc) => ({
     updatedAt: loc.updatedAt,
 });
 
+// 🚀 Dedicated In-Memory Caches for Master Data
+const subLocationCache = new Map();
+
+// Master data rarely changes, so we can cache it for 5 minutes safely
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
 // ---------------------------------------------------
 // GET ALL LOCATIONS
 // ---------------------------------------------------
@@ -245,7 +251,17 @@ export const deleteAllSubLocations = async (req, res, next) => {
 export const getSubLocationByCityLocation = async (req, res, next) => {
     try {
         const { cityId, locationId } = req.params;
+        const now = Date.now();
 
+        // 1. Composite Cache Key
+        const cacheKey = `${cityId}_${locationId}`;
+
+        if (subLocationCache.has(cacheKey)) {
+            const cached = subLocationCache.get(cacheKey);
+            if (cached.expiry > now) return res.status(200).json(cached.data);
+        }
+
+        // 2. Fetch Data
         const sublocations = await prisma.subLocation.findMany({
             where: { cityId, locationId },
             include: {
@@ -255,14 +271,25 @@ export const getSubLocationByCityLocation = async (req, res, next) => {
             orderBy: { Name: "asc" },
         });
 
-        if (sublocations.length === 0)
-            return next(new ApiError(404, "No sublocations found for this city and location"));
+        // 3. 🚀 FAIL-FAST: Skip Error stack trace generation
+        if (sublocations.length === 0) {
+            return res.status(404).json({ success: false, message: "No sublocations found for this city and location" });
+        }
 
-        res.status(200).json({
+        // 4. Concurrent Transformation
+        const transformedSubLocations = await Promise.all(sublocations.map(transformSubLocation));
+
+        // 5. Structure payload
+        const payload = {
             success: true,
             count: sublocations.length,
-            data: sublocations.map(transformSubLocation),
-        });
+            data: transformedSubLocations,
+        };
+
+        // 6. Update Cache
+        subLocationCache.set(cacheKey, { data: payload, expiry: now + CACHE_TTL_MS });
+
+        return res.status(200).json(payload);
     } catch (error) {
         next(new ApiError(500, error.message));
     }

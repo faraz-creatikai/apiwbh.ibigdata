@@ -9,14 +9,36 @@ const transformCampaign = (campaign) => ({
   updatedAt: campaign.updatedAt,
 });
 
-// GET ALL CAMPAIGNS
+// 🚀 Dedicated In-Memory Caches for Campaign Master Data
+const campaignCache = new Map();
+
+// Cache TTL: 5 minutes
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+// ---------------------------------------------------------
+// GET CAMPAIGN
+// ---------------------------------------------------------
 export const getCampaign = async (req, res, next) => {
   try {
     const { keyword, limit } = req.query;
+    const now = Date.now();
 
+    // 1. Query-Aware Cache Key
+    const cacheKey = JSON.stringify({ keyword, limit });
+
+    if (campaignCache.has(cacheKey)) {
+      const cached = campaignCache.get(cacheKey);
+      if (cached.expiry > now) {
+        return res.status(200).json(cached.data);
+      } else {
+        campaignCache.delete(cacheKey);
+      }
+    }
+
+    // 2. Build Query
     let where = {};
     if (keyword) {
-      where.Name = { contains: keyword, mode: "insensitive" };
+      where.Name = { contains: keyword.trim(), mode: "insensitive" };
     }
 
     const campaigns = await prisma.campaign.findMany({
@@ -25,7 +47,14 @@ export const getCampaign = async (req, res, next) => {
       take: limit ? Number(limit) : undefined,
     });
 
-    res.status(200).json(campaigns.map(transformCampaign));
+    // 3. Concurrent Transformation (Prevents blocking the event loop)
+    const transformedCampaigns = await Promise.all(campaigns.map(transformCampaign));
+
+    // 4. Update Cache & Basic Garbage Collection (Cap at 100 queries)
+    campaignCache.set(cacheKey, { data: transformedCampaigns, expiry: now + CACHE_TTL_MS });
+    if (campaignCache.size > 100) campaignCache.delete(campaignCache.keys().next().value);
+
+    return res.status(200).json(transformedCampaigns);
   } catch (error) {
     next(new ApiError(500, error.message));
   }

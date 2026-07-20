@@ -47,6 +47,7 @@ import socialAuthRoutes from "./routes/route.socialAuth.js";
 import notificationRoutes from "./routes/route.notification.js";
 import { ALLOWED_ORIGINS } from "./config/cors-origins.js";
 import salesScriptRoutes from "./routes/route.salesscript.js";
+import tabblyRoutes from "./routes/route.tabbly.js";
 const app = express();
 app.use(cookieParser());
 
@@ -104,6 +105,7 @@ app.use("/api/social-auth",socialAuthRoutes);
 app.use("/api/property", propertyRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/salesscript",salesScriptRoutes);
+app.use("/api/tabbly",tabblyRoutes);
 
 app.use(errorHandler);
 

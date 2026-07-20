@@ -9,13 +9,31 @@ export const transformTemplate = (tpl) => ({
   type: tpl.type,
   subject: tpl.subject,
   body: tpl.body,
-  whatsappImage:tpl.whatsappImage,
+  whatsappImage: tpl.whatsappImage,
   description: tpl.description,
   createdBy: tpl.createdBy,
   status: tpl.status,
   createdAt: tpl.createdAt,
   updatedAt: tpl.updatedAt,
+
+  whatsappMediaType: tpl.whatsappMediaType,
+  whatsappFileName: tpl.whatsappFileName,
+  whatsappLinkPreview: tpl.whatsappLinkPreview,
+  whatsappLocation: tpl.whatsappLocation,
+  whatsappPoll: tpl.whatsappPoll,
+  variables: tpl.variables,
+  category: tpl.category,
 });
+
+const safeJsonParse = (val, fallback) => {
+  if (val === undefined || val === null || val === "") return fallback;
+  if (typeof val !== "string") return val; // already an object/array
+  try {
+    return JSON.parse(val);
+  } catch {
+    return fallback;
+  }
+};
 
 export const createTemplate = async (req, res, next) => {
   try {
@@ -28,7 +46,7 @@ export const createTemplate = async (req, res, next) => {
       status = "Active",
     } = req.body;
 
-    let whatsappImage=[];
+    let whatsappImage = [];
 
     if (!name || !type || !body) {
       return next(new ApiError(400, "name, type and body are required"));
@@ -42,21 +60,43 @@ export const createTemplate = async (req, res, next) => {
       return next(new ApiError(409, "Template with this name already exists"));
     }
     if (req.files?.whatsappImage) {
+      const mediaType = req.body.whatsappMediaType || "image";
+
+      const uploadOptions = { folder: "templates/whatsapp_images" };
+
+      if (mediaType === "video") {
+        uploadOptions.resource_type = "video";
+      } else if (mediaType === "document") {
+        uploadOptions.resource_type = "raw"; // 👈 fixes the "Unsupported ZIP file" error
+      } else {
+        uploadOptions.resource_type = "image";
+        uploadOptions.transformation = [{ width: 1000, crop: "limit" }]; // only valid for images
+      }
+
       const uploads = req.files.whatsappImage.map((file) =>
-        cloudinary.uploader
-          .upload(file.path, {
-            folder: "templates/whatsapp_images",
-            transformation: [{ width: 1000, crop: "limit" }],
-          })
-          .then((upload) => {
-            fs.unlinkSync(file.path);
-            return upload.secure_url;
-          })
+        cloudinary.uploader.upload(file.path, uploadOptions).then((upload) => {
+          fs.unlinkSync(file.path);
+          return upload.secure_url;
+        })
       );
       whatsappImage = await Promise.all(uploads);
     }
 
     let newTemplate = "";
+    const whatsappLinkPreview = safeJsonParse(req.body.whatsappLinkPreview, null);
+    const whatsappPoll = safeJsonParse(req.body.whatsappPoll, null);
+    const variables = safeJsonParse(req.body.variables, []);
+    const whatsappLocation = safeJsonParse(req.body.whatsappLocation, null);
+    if (whatsappLocation) {
+      const { lat, lng } = whatsappLocation;
+      const valid =
+        typeof lat === "number" && typeof lng === "number" &&
+        !Number.isNaN(lat) && !Number.isNaN(lng) &&
+        lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+      if (!valid) {
+        return next(new ApiError(400, "whatsappLocation requires a valid lat/lng — pick a location on the map"));
+      }
+    }
     if (whatsappImage) {
       newTemplate = await prisma.template.create({
         data: {
@@ -68,6 +108,13 @@ export const createTemplate = async (req, res, next) => {
           description,
           status,
           createdBy: req.user?.id || "system",
+          whatsappMediaType: req.body.whatsappMediaType || "image",
+          whatsappFileName: req.body.whatsappFileName || "",
+          whatsappLinkPreview,
+          whatsappLocation,
+          whatsappPoll,
+          variables,
+          category: req.body.category || "",
         },
       });
     }
@@ -81,6 +128,13 @@ export const createTemplate = async (req, res, next) => {
           description,
           status,
           createdBy: req.user?.id || "system",
+          whatsappMediaType: req.body.whatsappMediaType || "image",
+          whatsappFileName: req.body.whatsappFileName || "",
+          whatsappLinkPreview,
+          whatsappLocation,
+          whatsappPoll,
+          variables,
+          category: req.body.category || "",
         },
       });
     }
@@ -236,15 +290,18 @@ export const updateTemplate = async (req, res, next) => {
     if (clean.removeImage === true) {
       if (existingImages.length > 0) {
         const publicId = getPublicId(existingImages[0]);
+        const existingMediaType = existing.whatsappMediaType || "image";
 
         if (publicId) {
-          await cloudinary.uploader.destroy(
-            `templates/whatsapp_images/${publicId}`
-          );
+          const destroyResourceType =
+            existingMediaType === "video" ? "video" : existingMediaType === "document" ? "raw" : "image";
+
+          await cloudinary.uploader.destroy(`templates/whatsapp_images/${publicId}`, {
+            resource_type: destroyResourceType, // 👈 added
+          });
         }
       }
-
-      clean.whatsappImage = []; // clear DB field
+      clean.whatsappImage = [];
     }
 
     // ======================================================
@@ -252,30 +309,58 @@ export const updateTemplate = async (req, res, next) => {
     // ======================================================
     if (req.files?.whatsappImage) {
       const file = req.files.whatsappImage[0];
+      const mediaType = clean.whatsappMediaType || existing.whatsappMediaType || "image";
 
-      // If user uploads a new image AND removeImage=true → conflict
       if (clean.removeImage === true) {
         return next(
-          new ApiError(
-            400,
-            "Cannot upload a new WhatsApp image while removeImage=true"
-          )
+          new ApiError(400, "Cannot upload a new WhatsApp image while removeImage=true")
         );
       }
 
-      const upload = await cloudinary.uploader.upload(file.path, {
-        folder: "templates/whatsapp_images",
-        transformation: [{ width: 1000, crop: "limit" }],
-      });
+      const uploadOptions = { folder: "templates/whatsapp_images" };
+      if (mediaType === "video") {
+        uploadOptions.resource_type = "video";
+      } else if (mediaType === "document") {
+        uploadOptions.resource_type = "raw";
+      } else {
+        uploadOptions.resource_type = "image";
+        uploadOptions.transformation = [{ width: 1000, crop: "limit" }];
+      }
 
+      const upload = await cloudinary.uploader.upload(file.path, uploadOptions);
       fs.unlinkSync(file.path);
 
-      // Save new image
       clean.whatsappImage = [upload.secure_url];
     }
 
     // remove removeImage from final DB update
     delete clean.removeImage;
+
+    if (clean.whatsappLinkPreview !== undefined)
+      clean.whatsappLinkPreview = safeJsonParse(clean.whatsappLinkPreview, null);
+    if (clean.whatsappLocation !== undefined) {
+      const parsedLocation = safeJsonParse(clean.whatsappLocation, null);
+
+      if (parsedLocation) {
+        const { lat, lng } = parsedLocation;
+        const valid =
+          typeof lat === "number" && typeof lng === "number" &&
+          !Number.isNaN(lat) && !Number.isNaN(lng) &&
+          lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+
+        if (!valid) {
+          return next(
+            new ApiError(400, "whatsappLocation requires a valid lat/lng — pick a location on the map")
+          );
+        }
+      }
+
+      clean.whatsappLocation = parsedLocation; // 👈 write the parsed object back, not the raw string
+    }
+    if (clean.whatsappPoll !== undefined)
+      clean.whatsappPoll = safeJsonParse(clean.whatsappPoll, null);
+    if (clean.variables !== undefined)
+      clean.variables = safeJsonParse(clean.variables, []);
 
     // ======================================================
     // UPDATE TEMPLATE

@@ -19,6 +19,10 @@ const transformLocation = (loc) => ({
   updatedAt: loc.updatedAt,
 });
 
+const locationCache = new Map();
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
 // ---------------------------------------------------
 // GET ALL LOCATIONS
 // ---------------------------------------------------
@@ -240,7 +244,15 @@ export const deleteAllLocations = async (req, res, next) => {
 export const getLocationByCity = async (req, res, next) => {
   try {
     const { cityId } = req.params;
+    const now = Date.now();
 
+    // 1. Serve from cache instantly
+    if (locationCache.has(cityId)) {
+      const cached = locationCache.get(cityId);
+      if (cached.expiry > now) return res.status(200).json(cached.data);
+    }
+
+    // 2. Fetch Data
     const locations = await prisma.location.findMany({
       where: { cityId },
       include: {
@@ -249,14 +261,25 @@ export const getLocationByCity = async (req, res, next) => {
       orderBy: { Name: "asc" },
     });
 
-    if (locations.length === 0)
-      return next(new ApiError(404, "No locations found for this city"));
+    // 3. 🚀 FAIL-FAST: Return a 404 response directly instead of throwing an expensive Error object
+    if (locations.length === 0) {
+      return res.status(404).json({ success: false, message: "No locations found for this city" });
+    }
 
-    res.status(200).json({
+    // 4. Concurrent Transformation
+    const transformedLocations = await Promise.all(locations.map(transformLocation));
+    
+    // 5. Structure payload (Exact same as your original)
+    const payload = {
       success: true,
       count: locations.length,
-      data: locations.map(transformLocation),
-    });
+      data: transformedLocations,
+    };
+
+    // 6. Update Cache
+    locationCache.set(cityId, { data: payload, expiry: now + CACHE_TTL_MS });
+
+    return res.status(200).json(payload);
   } catch (error) {
     next(new ApiError(500, error.message));
   }

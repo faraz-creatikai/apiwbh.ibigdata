@@ -81,6 +81,7 @@ export async function getRecommendedKeywordSearchData(keyword, customer,
     }
     console.log(" working");
     return {
+      targetCampaign: aiResult.filters.targetCampaign || null, // 🔥 Extract strict campaign
       tokens: aiResult.filters.tokens.filter(Boolean),
       fields: aiResult.filters.fields.filter(f => DEFAULT_FIELDS.includes(f)),
       priceRange: aiResult.filters.priceRange || { min: null, max: null },

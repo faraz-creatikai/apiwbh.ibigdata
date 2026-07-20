@@ -1,0 +1,6 @@
+{
+  "ignore": [
+    "whatsapp-auth-folder/*",
+    "whatsapp-auth-folder"
+  ]
+}
