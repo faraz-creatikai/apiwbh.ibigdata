@@ -28,6 +28,7 @@
     "express-validator": "^7.3.1",
     "got-scraping": "^4.2.1",
     "helmet": "^8.1.0",
+    "imapflow": "^1.4.8",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",

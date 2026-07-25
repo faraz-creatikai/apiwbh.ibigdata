@@ -35,6 +35,9 @@ import {
   getRadarChartStats,
   getCustomerCount,
   getCustomFieldValues,
+  archiveCustomer,
+  unarchiveCustomer,
+  getArchivedCustomers,
 } from "../controllers/controller.customer.js";
 
 import upload from "../config/multer.js";
@@ -58,26 +61,26 @@ customerRoutes.use(protectRoute);
 
 
 //dashboard routes
-customerRoutes.get("/dashboard/stats-count",getDashboardStatsCount);
-customerRoutes.get("/dashboard/lead-source-stats",getLeadSourcesStats);
-customerRoutes.get("/dashboard/lead-temperature-stats",getLeadTemperatureStats);
-customerRoutes.get("/dashboard/visiter-chart-stats",getVisitorsChartStats);
-customerRoutes.get("/dashboard/followup-chart-stats",getFollowupChartStats);
-customerRoutes.get("/dashboard/customer-location-stats",getCustomerLocationStats);
-customerRoutes.get("/dashboard/radar-chart-stats",getRadarChartStats);
+customerRoutes.get("/dashboard/stats-count", getDashboardStatsCount);
+customerRoutes.get("/dashboard/lead-source-stats", getLeadSourcesStats);
+customerRoutes.get("/dashboard/lead-temperature-stats", getLeadTemperatureStats);
+customerRoutes.get("/dashboard/visiter-chart-stats", getVisitorsChartStats);
+customerRoutes.get("/dashboard/followup-chart-stats", getFollowupChartStats);
+customerRoutes.get("/dashboard/customer-location-stats", getCustomerLocationStats);
+customerRoutes.get("/dashboard/radar-chart-stats", getRadarChartStats);
 
 
 //customer routes
 
 // 🧭 Base CRUD Routes
 customerRoutes.get("/today", getTodayCustomers);
-customerRoutes.get("/getcalllogs",getCallLogs);
-customerRoutes.get("/get-call-report",getCallReport);
+customerRoutes.get("/getcalllogs", getCallLogs);
+customerRoutes.get("/get-call-report", getCallReport);
 customerRoutes.get("/data-mining", dataMining);
-customerRoutes.get("/get-customer-fields-values",getCustomFieldValues);
+customerRoutes.get("/get-customer-fields-values", getCustomFieldValues);
 customerRoutes.get("/", getCustomer);
-customerRoutes.get("/count",getCustomerCount);
-customerRoutes.get("/all",getAllCustomers);
+customerRoutes.get("/count", getCustomerCount);
+customerRoutes.get("/all", getAllCustomers);
 
 
 //shortlist recommended customers
@@ -89,7 +92,7 @@ customerRoutes.put('/shortlist', protectRoute, updateShortlistStatus);
 
 customerRoutes.post("/check-duplicates", checkDuplicateContacts);
 customerRoutes.post("/qualification-agent", qualifyCustomer);
-customerRoutes.post("/recommended-customers",getRecommendedCustomer);
+customerRoutes.post("/recommended-customers", getRecommendedCustomer);
 
 customerRoutes.post("/agent-call", startCall);
 
@@ -148,8 +151,13 @@ customerRoutes.delete("/delete-calllog/:id", deleteCallLogById);
 
 //deal closing routes
 customerRoutes.get("/closed-deals", protectRoute, getClosedDeals);
-customerRoutes.post("/close-deal/:id",protectRoute,closeDeal);
-customerRoutes.post("/reopen-deal/:id",protectRoute,reopenDeal);
+customerRoutes.post("/close-deal/:id", protectRoute, closeDeal);
+customerRoutes.post("/reopen-deal/:id", protectRoute, reopenDeal);
+
+//archieve routes
+customerRoutes.patch("/archive/:id", protectRoute, archiveCustomer);
+customerRoutes.patch("/unarchive/:id", protectRoute, unarchiveCustomer);
+customerRoutes.get("/archived", protectRoute, getArchivedCustomers);
 
 customerRoutes.get("/:id", getCustomerById);
 

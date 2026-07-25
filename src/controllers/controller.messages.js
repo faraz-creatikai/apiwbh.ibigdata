@@ -5,33 +5,14 @@ import ApiError from "../utils/ApiError.js";
 import { makeCall } from "../config/exotel.js";
 import fs from "fs";
 import { EmailCampaignAgent } from "../ai/agent.js";
+import { DEFAULT_TEMPLATE_HTML, mergeAiContentIntoTemplate, replacePlaceholders } from "../utils/mergeTemplate.js";
 
 const prisma = new PrismaClient();
 
 // --------------------------------------------
 // 🔀 PLACEHOLDER REPLACEMENT (Same Logic)
 // --------------------------------------------
-const replacePlaceholders = (templateText, customer) => {
-  if (!templateText) return templateText;
 
-  const map = {
-    name: customer.customerName || customer.name || "",
-    email: customer.Email || "",
-    contact: customer.ContactNumber || customer.Contact || "",
-    city: customer.City || customer.city || "",
-    propertyType: customer.CustomerSubType || customer.propertyType || "",
-  };
-
-  Object.keys(customer).forEach((k) => {
-    const val = customer[k];
-    if (val === undefined || val === null) return;
-    map[k.toLowerCase()] = typeof val === "string" ? val : String(val);
-  });
-
-  return templateText.replace(/{{\s*([^}]+)\s*}}/g, (_, key) => {
-    return map[key.trim().toLowerCase()] ?? "";
-  });
-};
 
 // --------------------------------------------
 // 📌 Fetch Customers
@@ -736,6 +717,15 @@ function buildCustomerContext(baseCustomer) {
 
 //email template ai campaign send
 
+// Drop-in replacement for sendEmailDirectToCustomers.
+// Only change: destructure an optional `templateHtml` from the payload and
+// forward it to EmailCampaignAgent so AI drafts can use a chosen template as
+// their visual base. Manual sends don't need this — the frontend already
+// puts the template's HTML straight into `Body` — but it's accepted here
+// too in case you want to log/attribute it later.
+
+
+
 export const sendEmailDirectToCustomers = async (req, res, next) => {
   try {
     const {
@@ -745,18 +735,18 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
       Subject,
       Body,
       mode = "english",
+      templateHtml,
     } = req.body;
 
     if (!userPrompt && !(Subject && Body)) {
-      return next(
-        new ApiError(400, "Either userPrompt or Subject & Body is required")
-      );
+      return next(new ApiError(400, "Either userPrompt or Subject & Body is required"));
     }
 
     const customers = await fetchTargetCustomers({ customerIds, sendToAll });
     if (!customers.length) return next(new ApiError(404, "No customers found"));
 
     const results = [];
+    const templateToUse = templateHtml || DEFAULT_TEMPLATE_HTML; // <-- always some template now
 
     for (const c of customers) {
       try {
@@ -768,53 +758,38 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
         let subject = "";
         let body = "";
         let metadata = {};
+        let workSummary = "";
 
         if (userPrompt) {
-          // AI generates content already personalized for THIS customer
           const customerContext = buildCustomerContext(c);
           const EmailResponse = await EmailCampaignAgent(userPrompt, customerContext, mode);
 
           subject = EmailResponse?.email?.subject || "";
-          body = EmailResponse?.email?.body || "";
+          const aiBody = EmailResponse?.email?.body || "";
           metadata = EmailResponse?.metadata || {};
+          workSummary = EmailResponse?.workSummary || "";
 
-          if (!subject || !body) {
-            results.push({
-              id: c.id,
-              name: c.customerName,
-              status: "failed",
-              error: "AI failed to generate valid content",
-            });
+          if (!subject || !aiBody) {
+            results.push({ id: c.id, name: c.customerName, status: "failed", error: "AI failed to generate valid content" });
             continue;
           }
+
+          body = mergeAiContentIntoTemplate(templateToUse, aiBody, c);
         } else {
-          // Static override path — placeholders resolved manually here since no AI ran
           subject = replacePlaceholders(Subject, c);
           body = replacePlaceholders(Body, c);
         }
 
         const info = await sendEmail(c.Email, subject, body);
-
-        results.push({
-          id: c.id,
-          email: c.Email,
-          status: "sent",
-          metadata,
-          info: info.messageId || info.response,
-        });
+        results.push({ id: c.id, email: c.Email, status: "sent", metadata, workSummary, info: info.messageId || info.response });
       } catch (err) {
-        results.push({
-          id: c.id,
-          name: c.customerName,
-          status: "failed",
-          error: err.message,
-        });
+        results.push({ id: c.id, name: c.customerName, status: "failed", error: err.message });
       }
     }
 
     res.status(200).json({
       success: true,
-      sent: results.filter((r) => r.status === "sent").length,
+      sent: results.filter(r => r.status === "sent").length,
       results,
     });
   } catch (err) {

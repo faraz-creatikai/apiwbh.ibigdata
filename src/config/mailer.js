@@ -1,4 +1,6 @@
 import nodemailer from "nodemailer";
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
+import { ImapFlow } from "imapflow";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -24,6 +26,38 @@ const smtpTransporter = nodemailer.createTransport({
   },
 });
 
+
+
+const saveToSentFolder = async (rawEmail) => {
+  const client = new ImapFlow({
+    host: "imap.hostinger.com",
+    port: 993,
+    secure: true,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+    // Optional: Set to false to hide those verbose IMAP logs in your terminal
+    logger: false, 
+  });
+
+  try {
+    await client.connect();
+
+    // Append the raw email to Hostinger's Sent folder
+    // The ['\\Seen'] flag marks it as read so it doesn't show as unread in Sent
+    await client.append("INBOX.Sent", rawEmail, ["\\Seen"]);
+    
+    console.log("✅ Email successfully saved to INBOX.Sent");
+  } catch (error) {
+    console.error("❌ Failed to save email to Sent folder:", error);
+  } finally {
+    // Always ensure you log out to prevent hanging connections
+    await client.logout();
+  }
+};
+
+
 // 3️⃣ Generic sendEmail function (uses Hostinger SMTP)
 export const sendEmail = async (to, subject, html) => {
   try {
@@ -33,11 +67,27 @@ export const sendEmail = async (to, subject, html) => {
       subject,
       html,
     };
-    const info = await transporter.sendMail(mailOptions);
+
+    // Generate raw RFC822 email
+    const rawEmail = await new MailComposer(mailOptions).compile().build();
+
+    // Send email
+    const info = await transporter.sendMail({
+      envelope: {
+        from: process.env.SMTP_USER,
+        to,
+      },
+      raw: rawEmail,
+    });
+
     console.log("✅ Email sent:", info.response);
+
+    // Save to Hostinger Sent folder
+    await saveToSentFolder(rawEmail);
+
     return info;
   } catch (error) {
-    console.error("❌ Email error:", error.message);
+    console.error("❌ Email error:", error);
     throw error;
   }
 };

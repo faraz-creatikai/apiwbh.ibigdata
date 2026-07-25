@@ -16,17 +16,37 @@ import { socialAgentPrompt } from "./prompts/socialAgentPrompt.js";
 export function safeJsonParse(raw) {
   if (!raw) return null;
 
-  // Remove ```json ... ``` or ``` ... ``` fences
+  // 1. Remove ```json ... ``` or ``` ... ``` fences
   const cleaned = raw
-    .replace(/```json/g, "")
+    .replace(/```json/gi, "")
     .replace(/```/g, "")
     .trim();
 
+  // 2. Try standard parse first (Fast Path - preserves existing agent behavior)
   try {
     return JSON.parse(cleaned);
-  } catch (err) {
-    console.warn("Failed to parse JSON:", cleaned);
-    return null;
+  } catch (firstErr) {
+    // 3. Fallback Repair Path: Only executes if standard parse failed
+    try {
+      // Fix A: Remove rogue backslashes before non-JSON escape characters (e.g. \枉 -> 枉, \m -> m)
+      // Valid JSON escapes: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
+      let sanitized = cleaned.replace(/\\(?:[^"\\\/bfnrtu]|u(?![0-9a-fA-F]{4}))/g, (match) => {
+        return match.slice(1); // Strip only the invalid backslash
+      });
+
+      // Fix B: Escape literal unescaped control characters / raw line breaks inside string values
+      sanitized = sanitized.replace(/[\u0000-\u001F\u007F-\u009F]/g, (match) => {
+        if (match === '\n') return '\\n';
+        if (match === '\r') return '\\r';
+        if (match === '\t') return '\\t';
+        return '';
+      });
+
+      return JSON.parse(sanitized);
+    } catch (secondErr) {
+      console.warn("Failed to parse JSON:", cleaned);
+      return null;
+    }
   }
 }
 
@@ -45,6 +65,10 @@ async function executeDynamicPrompt(client, model, provider, promptText) {
     const response = await client.models.generateContent({
       model: model,
       contents: [{ role: "user", parts: [{ text: promptText }] }],
+      config: {
+        responseMimeType: "application/json", // Hard-enforces valid JSON syntax
+        temperature: 0.2
+      }
     });
     return response?.text;
   } else {
@@ -271,30 +295,25 @@ export async function SocialContentAgent(payload) {
 }
 
 
+// Drop-in replacement for EmailCampaignAgent.
+// Only change: a 4th optional `templateHtml` param, forwarded into the
+// payload the prompt sees as DATA.templateHtml. See emailCampaignPrompt.js
+// for the matching instruction that tells the model how to use it.
+
 export async function EmailCampaignAgent(userPrompt, customerContext = {}, mode = "hindi") {
-  // Construct the payload dynamically — no followups for email campaigns
   const payload = {
-    userPrompt: userPrompt,
-    mode: mode, // language/tone for the AI output
+    userPrompt,
+    mode,
     ...(customerContext.customer && { customer: customerContext.customer }),
   };
 
-  const { client, model, provider } = await getDynamicAIContext("GEMINI", "models/gemini-2.5-flash-lite");
-
+  const { client, model, provider } = await getDynamicAIContext("GEMINI", "models/gemini-2.5-flash");
   const promptText = `${emailCampaignPrompt}\nDATA:\n${JSON.stringify(payload, null, 2)}`;
   const raw = await executeDynamicPrompt(client, model, provider, promptText);
 
-  if (!raw || !raw.trim()) {
-    throw new Error("AI returned empty response");
-  }
-
-  // Extract JSON safely
+  if (!raw || !raw.trim()) throw new Error("AI returned empty response");
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
-
-  if (!jsonMatch) {
-    throw new Error("Invalid AI response format");
-  }
-
+  if (!jsonMatch) throw new Error("Invalid AI response format");
   return safeJsonParse(jsonMatch[0]);
 }
 
@@ -464,7 +483,7 @@ export async function productPriceCompareAgent(productName, products) {
     const raw = await executeDynamicPrompt(client, model, provider, promptText);
     console.log(" output raw", raw)
     return raw ? raw.trim() : fallback;
-    
+
   } catch (error) {
     console.error("AI Summary error:", error.message);
     return fallback; // Safe failover if the database AI key logic fails

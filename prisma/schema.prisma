@@ -33,11 +33,12 @@ model Admin {
   // Self Relation (admins created by this admin)
   createdAdmins Admin[] @relation("CreatedByRelation")
 
-  assignedCustomers Customer[] @relation("CustomerAssignedTo")
-  assignedAIAgents  AIAgent[]  @relation("AIAgentAssignedTo")
-  createdCustomers  Customer[] @relation("CustomerCreatedBy")
-  createdFollowups  Followup[] @relation("FollowupCreatedBy")
-  createdPropertys  Property[] @relation("PropertyCreatedBy")
+  assignedCustomers Customer[]        @relation("CustomerAssignedTo")
+  assignedAIAgents  AIAgent[]         @relation("AIAgentAssignedTo")
+  createdCustomers  Customer[]        @relation("CustomerCreatedBy")
+  createdFollowups  Followup[]        @relation("FollowupCreatedBy")
+  createdPropertys  Property[]        @relation("PropertyCreatedBy")
+  archivedCustomers CustomerArchive[] @relation("AdminArchivedCustomers")
 
   assignedContact Contact[] @relation("ContactAssignedTo")
 
@@ -303,7 +304,6 @@ model Template {
   whatsappPoll        Json?   @default("null") // { name, options: [], selectableCount }
   variables           Json?   @default("[]") // e.g. ["customerName","amount"] — useful for email too, as a "available merge tags" hint in your UI
   category            String? @default("") // free-text grouping, e.g. "marketing" / "reminder" — just metadata
-  
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -417,6 +417,22 @@ model PropertyShortlist {
   @@index([propertyId])
 }
 
+model CustomerArchive {
+  id String @id @default(uuid())
+
+  customerId String
+  customer   Customer @relation("CustomerArchivedByAdmin", fields: [customerId], references: [id], onDelete: Cascade)
+
+  adminId String
+  admin   Admin  @relation("AdminArchivedCustomers", fields: [adminId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([customerId, adminId]) // one archive record per admin per customer
+  @@index([adminId])
+  @@index([customerId])
+}
+
 model Customer {
   id              String  @id @default(uuid())
   Campaign        String? @default("")
@@ -425,6 +441,7 @@ model Customer {
   LeadType        String? @default("")
   customerName    String
   ContactNumber   String
+  CountryCode     String? @default("91")
   City            String? @default("")
   Location        String? @default("")
   SubLocation     String? @default("")
@@ -476,6 +493,9 @@ model Customer {
 
   // Customers who have shortlisted this property (If this customer is a Seller)
   shortlistedBy PropertyShortlist[] @relation("PropertyShortlist")
+
+  // Customers who have archieved this customer
+  archivedBy CustomerArchive[] @relation("CustomerArchivedByAdmin")
 
   // INDEXES (put here at bottom)
   @@index([ContactNumber])
