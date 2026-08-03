@@ -1,5 +1,5 @@
 // config/baileys.js
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import { getSocket } from '../socket/socket.js';
 import fs from 'fs/promises';
@@ -73,10 +73,12 @@ export const initWhatsApp = async (options = {}) => {
   clearReconnectTimer();
 
   const myGeneration = ++socketGeneration;
+  const { version, isLatest } = await fetchLatestBaileysVersion();
 
   const { state, saveCreds } = await useMultiFileAuthState('whatsapp-auth-folder');
 
   const sock = makeWASocket({
+    version,
     auth: state,
     markOnlineOnConnect: false,
     printQRInTerminal: false,
@@ -84,7 +86,7 @@ export const initWhatsApp = async (options = {}) => {
     // query timeout. Baileys' own default identity is unreliable for the
     // pairing-code handshake specifically — QR mode works fine without this,
     // but pairing needs it to avoid an immediate 428 "Connection Closed".
-    browser: Browsers.ubuntu('Chrome'),
+    browser: ['Property CRM', 'Chrome', '1.0.0'],
     defaultQueryTimeoutMs: undefined,
     // 👇 NOTE: deliberately NOT setting qrTimeout here. Baileys uses `qrTimeout || 60_000`
     // for the first QR and `qrTimeout || 20_000` for every one after — passing an explicit
@@ -181,13 +183,17 @@ export const initWhatsApp = async (options = {}) => {
       resetQRTiming();
       connectedUserMeta = null;
 
+      const error = lastDisconnect?.error;
+      const statusCode = new Boom(error)?.output?.statusCode;
+      console.log(`⚠️ Connection closed. Reason code: ${statusCode} | Message: ${error?.message || 'Unknown'}`);
+
       if (intentionallyPaused) {
         console.log("⏸️ QR loop paused. Waiting for UI to wake it up again.");
         currentSocket = null;
         return;
       }
 
-      const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+    
       const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
       const isConflict = statusCode === DisconnectReason.replaced || statusCode === 409;
       const shouldReconnect = !isLoggedOut;
