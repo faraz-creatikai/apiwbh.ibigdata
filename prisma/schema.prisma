@@ -11,6 +11,7 @@ model BrandSettings {
   id              Int    @id @default(1)
   appName         String @default("EstateAI Agent Platform")
   shortName       String @default("EstateAI")
+  primaryColor    String   @default("#0066cc")
   themeColor      String @default("#ffffff")
   backgroundColor String @default("#ffffff")
 

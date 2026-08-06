@@ -45,7 +45,7 @@ export const getBrandSettings = async (req, res, next) => {
 export const updateBrandSettings = async (req, res, next) => {
   try {
     const admin = req.admin;
-    const { appName, shortName, themeColor, backgroundColor } = req.body;
+    const { appName, shortName, themeColor,primaryColor, backgroundColor } = req.body;
 
     const uploadedUrls = {};
     const fileFields = [
@@ -75,6 +75,7 @@ export const updateBrandSettings = async (req, res, next) => {
       update: {
         ...(appName && { appName }),
         ...(shortName && { shortName }),
+        ...(primaryColor && { primaryColor }),
         ...(themeColor && { themeColor }),
         ...(backgroundColor && { backgroundColor }),
         ...uploadedUrls,
@@ -83,6 +84,7 @@ export const updateBrandSettings = async (req, res, next) => {
         id: 1,
         appName: appName || "EstateAI Agent Platform",
         shortName: shortName || "EstateAI",
+        primaryColor: primaryColor || "#0066cc",
         ...uploadedUrls,
       },
     });
