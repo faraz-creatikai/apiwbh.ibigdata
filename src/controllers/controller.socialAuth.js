@@ -1,5 +1,6 @@
 import { SocialContentAgent } from "../ai/agent.js";
 import cloudinary from "../config/cloudinary.js";
+import { clientUrl } from "../config/cors-origins.js";
 import prisma from "../config/prismaClient.js";
 import fs from "fs";
 
@@ -367,7 +368,7 @@ export const metaCallback = async (req, res) => {
         // =========================
         // 8. Redirect to frontend
         // =========================
-        res.redirect("https://edu.ibigdata.in/socialmedia-manager");
+        res.redirect(`${clientUrl}/socialmedia-manager`);
     } catch (err) {
         console.error("❌ OAuth Error:", err);
         res.status(500).json({

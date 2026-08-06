@@ -9,6 +9,7 @@ import { initFacebookCron, initInstagramCron } from "./jobs/instagramScheduler.j
 import { initSocket } from "./socket/socket.js";
 import { deleteOldNotifications, initFollowupNotificationCron } from "./jobs/notification/notificationEvents.js";
 import { initWhatsApp } from "./config/baileys.js";
+import { sweepOldUploads } from "./jobs/cleanupUploads.js";
 
 
 const PORT = process.env.PORT || 5000;
@@ -31,4 +32,14 @@ server.listen(PORT, async () => {
     try { await deleteOldNotifications(); }
     catch (err) { console.error("Notification cleanup error:", err); }
   }, 24 * 60 * 60 * 1000);
+
+  // NEW: clean up old video-project uploads (photos + rendered videos)
+  // every 15 minutes, plus once on boot in case of leftovers from a crash.
+  sweepOldUploads().catch((err) =>
+    console.error("Initial upload sweep error:", err)
+  );
+  setInterval(async () => {
+    try { await sweepOldUploads(); }
+    catch (err) { console.error("Upload cleanup error:", err); }
+  }, 15 * 60 * 1000);
 });

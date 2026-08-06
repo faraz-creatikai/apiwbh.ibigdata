@@ -37,7 +37,7 @@ export const createAdminValidator = [
   body("role")
     .notEmpty()
     .withMessage("Role is required")
-    .isIn(["administrator","client_admin", "city_admin", "user"])
+    .isIn(["administrator","client_admin", "city_admin", "user", "agent"])
     .withMessage("Invalid role. Must be administrator, city_admin, or user"),
   body("city")
     .optional()

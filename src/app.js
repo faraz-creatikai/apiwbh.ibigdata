@@ -48,6 +48,10 @@ import notificationRoutes from "./routes/route.notification.js";
 import { ALLOWED_ORIGINS } from "./config/cors-origins.js";
 import salesScriptRoutes from "./routes/route.salesscript.js";
 import tabblyRoutes from "./routes/route.tabbly.js";
+import videoProjectRoutes from "./routes/route.videoProject.js";
+import path from "path";
+import brandRoutes from "./routes/brandRoutes.js";
+
 const app = express();
 app.use(cookieParser());
 
@@ -59,9 +63,10 @@ app.use(
   })
 );
 app.use(express.json());
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // Routes
-
+app.use("/api/brand",brandRoutes);
 app.use("/api/user",requestUserRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/mas/customerFields", customerFieldsRoutes);
@@ -106,6 +111,7 @@ app.use("/api/property", propertyRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/salesscript",salesScriptRoutes);
 app.use("/api/tabbly",tabblyRoutes);
+app.use("/api/video-project", videoProjectRoutes);
 
 app.use(errorHandler);
 

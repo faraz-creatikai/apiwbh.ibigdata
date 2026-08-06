@@ -967,7 +967,7 @@ export const deleteApiKey = async (req, res, next) => {
     }
 
     // 2. Delete the key
-    await prisma.apiKey.delete({
+    await prisma.cRMApiKey.delete({
       where: {
         id: keyId
       },

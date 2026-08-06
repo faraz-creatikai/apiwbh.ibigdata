@@ -5,14 +5,41 @@ import ApiError from "../utils/ApiError.js";
 import { makeCall } from "../config/exotel.js";
 import fs from "fs";
 import { EmailCampaignAgent } from "../ai/agent.js";
-import { DEFAULT_TEMPLATE_HTML, mergeAiContentIntoTemplate, replacePlaceholders } from "../utils/mergeTemplate.js";
 
 const prisma = new PrismaClient();
 
 // --------------------------------------------
 // 🔀 PLACEHOLDER REPLACEMENT (Same Logic)
 // --------------------------------------------
+// utils/mergeTemplate.js
+export function replacePlaceholders(str, customer) {
+  if (!str) return str;
+  const map = {
+    Name: customer.customerName || "",
+    City: customer.City || "",
+    Campaign: customer.Campaign || "",
+    ContactNumber: customer.ContactNumber || "",
+    Email: customer.Email || "",
+  };
+  let out = str;
+  for (const [key, val] of Object.entries(map)) {
+    out = out.replaceAll(`{{${key}}}`, val);
+  }
+  // dynamic CustomerFields, e.g. {{CustomerFields.ImprovementArea}}
+  if (customer.CustomerFields) {
+    for (const [k, v] of Object.entries(customer.CustomerFields)) {
+      out = out.replaceAll(`{{CustomerFields.${k}}}`, v ?? "");
+    }
+  }
+  return out;
+}
 
+export function mergeAiContentIntoTemplate(templateHtml, aiBody, customer) {
+  const filled = replacePlaceholders(templateHtml, customer);
+  return filled.includes("{{AI_CONTENT}}")
+    ? filled.replace("{{AI_CONTENT}}", aiBody)
+    : filled.replace("</body>", `<p>${aiBody}</p></body>`); // fallback if marker missing
+}
 
 // --------------------------------------------
 // 📌 Fetch Customers
@@ -724,8 +751,6 @@ function buildCustomerContext(baseCustomer) {
 // puts the template's HTML straight into `Body` — but it's accepted here
 // too in case you want to log/attribute it later.
 
-
-
 export const sendEmailDirectToCustomers = async (req, res, next) => {
   try {
     const {
@@ -735,7 +760,7 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
       Subject,
       Body,
       mode = "english",
-      templateHtml,
+      templateHtml, // still comes from frontend for merging — just never sent to AI
     } = req.body;
 
     if (!userPrompt && !(Subject && Body)) {
@@ -746,7 +771,6 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
     if (!customers.length) return next(new ApiError(404, "No customers found"));
 
     const results = [];
-    const templateToUse = templateHtml || DEFAULT_TEMPLATE_HTML; // <-- always some template now
 
     for (const c of customers) {
       try {
@@ -762,7 +786,12 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
 
         if (userPrompt) {
           const customerContext = buildCustomerContext(c);
-          const EmailResponse = await EmailCampaignAgent(userPrompt, customerContext, mode);
+          const EmailResponse = await EmailCampaignAgent(
+            userPrompt,
+            customerContext,
+            mode,
+            !!templateHtml // just a boolean flag now
+          );
 
           subject = EmailResponse?.email?.subject || "";
           const aiBody = EmailResponse?.email?.body || "";
@@ -774,7 +803,7 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
             continue;
           }
 
-          body = mergeAiContentIntoTemplate(templateToUse, aiBody, c);
+          body = templateHtml ? mergeAiContentIntoTemplate(templateHtml, aiBody, c) : aiBody;
         } else {
           subject = replacePlaceholders(Subject, c);
           body = replacePlaceholders(Body, c);

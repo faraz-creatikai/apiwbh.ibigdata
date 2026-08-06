@@ -5,5 +5,6 @@ export const ALLOWED_ORIGINS = [
   "https://ibigdata.in",
   "https://wbh.ibigdata.in",
   "https://edu.ibigdata.in",
-  "https://workbyhome.in",
 ];
+
+export const clientUrl="https://edu.ibigdata.in";

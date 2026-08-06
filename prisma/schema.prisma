@@ -7,6 +7,24 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model BrandSettings {
+  id              Int    @id @default(1)
+  appName         String @default("EstateAI Agent Platform")
+  shortName       String @default("EstateAI")
+  themeColor      String @default("#ffffff")
+  backgroundColor String @default("#ffffff")
+
+  // Image URLs (Store the actual images in AWS S3, Cloudinary, or your server's upload folder)
+  faviconUrl      String?
+  logoTextUrl     String? // Logo with domain name text
+  logoIconUrl     String? // Logo without text
+  splashScreenUrl String?
+  icon192Url      String? // For manifest
+  icon512Url      String? // For manifest
+
+  updatedAt DateTime @updatedAt
+}
+
 model Admin {
   id           String      @id @default(uuid())
   name         String
@@ -33,12 +51,11 @@ model Admin {
   // Self Relation (admins created by this admin)
   createdAdmins Admin[] @relation("CreatedByRelation")
 
-  assignedCustomers Customer[]        @relation("CustomerAssignedTo")
-  assignedAIAgents  AIAgent[]         @relation("AIAgentAssignedTo")
-  createdCustomers  Customer[]        @relation("CustomerCreatedBy")
-  createdFollowups  Followup[]        @relation("FollowupCreatedBy")
-  createdPropertys  Property[]        @relation("PropertyCreatedBy")
-  archivedCustomers CustomerArchive[] @relation("AdminArchivedCustomers")
+  assignedCustomers Customer[] @relation("CustomerAssignedTo")
+  assignedAIAgents  AIAgent[]  @relation("AIAgentAssignedTo")
+  createdCustomers  Customer[] @relation("CustomerCreatedBy")
+  createdFollowups  Followup[] @relation("FollowupCreatedBy")
+  createdPropertys  Property[] @relation("PropertyCreatedBy")
 
   assignedContact Contact[] @relation("ContactAssignedTo")
 
@@ -57,6 +74,7 @@ enum Role {
   client_admin
   city_admin
   user
+  agent
 }
 
 enum AdminStatus {
@@ -417,22 +435,6 @@ model PropertyShortlist {
   @@index([propertyId])
 }
 
-model CustomerArchive {
-  id String @id @default(uuid())
-
-  customerId String
-  customer   Customer @relation("CustomerArchivedByAdmin", fields: [customerId], references: [id], onDelete: Cascade)
-
-  adminId String
-  admin   Admin  @relation("AdminArchivedCustomers", fields: [adminId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-
-  @@unique([customerId, adminId]) // one archive record per admin per customer
-  @@index([adminId])
-  @@index([customerId])
-}
-
 model Customer {
   id              String  @id @default(uuid())
   Campaign        String? @default("")
@@ -441,7 +443,6 @@ model Customer {
   LeadType        String? @default("")
   customerName    String
   ContactNumber   String
-  CountryCode     String? @default("91")
   City            String? @default("")
   Location        String? @default("")
   SubLocation     String? @default("")
@@ -493,9 +494,6 @@ model Customer {
 
   // Customers who have shortlisted this property (If this customer is a Seller)
   shortlistedBy PropertyShortlist[] @relation("PropertyShortlist")
-
-  // Customers who have archieved this customer
-  archivedBy CustomerArchive[] @relation("CustomerArchivedByAdmin")
 
   // INDEXES (put here at bottom)
   @@index([ContactNumber])

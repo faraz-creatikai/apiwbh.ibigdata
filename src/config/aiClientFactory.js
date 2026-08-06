@@ -1,72 +1,93 @@
 // utils/aiClientFactory.js
 import { GoogleGenAI } from "@google/genai"; 
 import OpenAI from "openai";
+import Groq from "groq-sdk"; // <-- 1. Import Groq
 import prisma from "../config/prismaClient.js";
 import { decryptKey } from "../utils/cryptoHelper.js";
 
 // DO NOT remove these! The useFallback function needs them.
 import { gemini } from "../config/gemini.js";
 import { openai } from "../config/openai.js";
+// Optional: import { groq } from "../config/groq.js" if you create a hardcoded file for it
 
 /**
  * Resolves the SDK by finding the SINGLE globally active master system key.
  * Falls back to hardcoded defaults if no custom master key is configured.
- * @param {'GEMINI' | 'OPENAI'} defaultProvider - The fallback provider if DB is empty
+ * @param {'GEMINI' | 'OPENAI' | 'GROQ'} defaultProvider - The fallback provider if DB is empty
  * @param {string} defaultModel - The hardcoded model string to fall back to
  * @returns {Promise<{ client: any, model: string, provider: string }>}
  */
 export async function getDynamicAIContext(defaultProvider, defaultModel) {
-  // Helper to instantly serve your existing hardcoded setups based on the requested default
-  const useFallback = () => ({
-    client: defaultProvider === "GEMINI" ? gemini : openai,
-    model: defaultModel,
-    provider: defaultProvider, // Let the caller know which provider was loaded
-  });
+  
+  // 1. Let's log exactly what was requested by the controller
+  console.log(`[AI Factory] Requested Default Provider: ${defaultProvider}, Model: ${defaultModel}`);
+
+  const useFallback = () => {
+    let fallbackClient;
+    
+    console.log(`[AI Factory] USING FALLBACK FOR: ${defaultProvider}`); // Adjusted log
+
+    if (defaultProvider === "GEMINI") {
+      fallbackClient = gemini;
+    } else if (defaultProvider === "GROQ") {
+      fallbackClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    } else {
+      fallbackClient = openai;
+    }
+
+    return {
+      client: fallbackClient,
+      model: defaultModel,
+      provider: defaultProvider, 
+    };
+  };
 
   try {
-    // Look up the SINGLE active key belonging to the master 'administrator'.
-    // Notice we REMOVED the provider filter. The DB dictates the global active AI.
     const configRecord = await prisma.adminAiApiKey.findFirst({
       where: {
         status: "ACTIVE",
         admin: {
-          role: "administrator" // Automatically links to your Admin model's enum
+          role: "administrator" 
         }
       },
     });
 
-    // If absolutely nothing is active in the DB, use the fallback
     if (!configRecord) {
+      console.log("[AI Factory] No active DB key found. Triggering fallback.");
       return useFallback();
     }
 
     const plainTextKey = decryptKey(configRecord.apiKey);
     if (!plainTextKey) {
-      console.warn(`Failed to decrypt master key for ${configRecord.provider}. Falling back to default.`);
+      console.warn(`[AI Factory] Failed to decrypt master key for ${configRecord.provider}. Triggering fallback.`);
       return useFallback();
     }
 
     let clientInstance;
     const activeProvider = configRecord.provider.toUpperCase();
 
-    // Instantiate whichever client is marked ACTIVE in the database
     if (activeProvider === "GEMINI") {
       clientInstance = new GoogleGenAI({ apiKey: plainTextKey || process.env.GEMINI_API_KEY });
     } else if (activeProvider === "OPENAI") {
       clientInstance = new OpenAI({ apiKey: plainTextKey || process.env.OPENAI_API_KEY });
+    } else if (activeProvider === "GROQ") {
+      clientInstance = new Groq({ apiKey: plainTextKey || process.env.GROQ_API_KEY });
     } else {
-      console.warn(`Unsupported active provider in DB: ${activeProvider}. Falling back to default.`);
+      console.warn(`[AI Factory] Unsupported active provider in DB: ${activeProvider}. Triggering fallback.`);
       return useFallback();
     }
+
+    // 2. THIS is likely where your code is actually exiting!
+    console.log(`[AI Factory] SUCCESS: Database override active. Using DB Provider: ${activeProvider}`);
 
     return {
       client: clientInstance,
       model: configRecord.model || defaultModel, 
-      provider: activeProvider // Let the caller know which provider was loaded
+      provider: activeProvider 
     };
     
   } catch (error) {
-    console.error(`Error resolving system AI context:`, error.message);
-    return useFallback(); // Safe failover if the database is unreachable
+    console.error(`[AI Factory] Error resolving system AI context:`, error.message);
+    return useFallback();
   }
 }
