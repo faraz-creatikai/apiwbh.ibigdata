@@ -4,7 +4,7 @@ export const ALLOWED_ORIGINS = [
   "http://localhost:5678/",
   "https://ibigdata.in",
   "https://edu.ibigdata.in",
-  "https://wbh.estateai.in",
+  "https://wbh.ibigdata.in",
 
 ];
 
