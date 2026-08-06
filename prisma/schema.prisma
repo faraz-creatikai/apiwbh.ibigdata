@@ -56,6 +56,7 @@ model Admin {
   createdCustomers  Customer[] @relation("CustomerCreatedBy")
   createdFollowups  Followup[] @relation("FollowupCreatedBy")
   createdPropertys  Property[] @relation("PropertyCreatedBy")
+  archivedCustomers CustomerArchive[] @relation("AdminArchivedCustomers")
 
   assignedContact Contact[] @relation("ContactAssignedTo")
 
@@ -435,6 +436,22 @@ model PropertyShortlist {
   @@index([propertyId])
 }
 
+model CustomerArchive {
+  id String @id @default(uuid())
+
+  customerId String
+  customer   Customer @relation("CustomerArchivedByAdmin", fields: [customerId], references: [id], onDelete: Cascade)
+
+  adminId String
+  admin   Admin  @relation("AdminArchivedCustomers", fields: [adminId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([customerId, adminId]) // one archive record per admin per customer
+  @@index([adminId])
+  @@index([customerId])
+}
+
 model Customer {
   id              String  @id @default(uuid())
   Campaign        String? @default("")
@@ -494,6 +511,9 @@ model Customer {
 
   // Customers who have shortlisted this property (If this customer is a Seller)
   shortlistedBy PropertyShortlist[] @relation("PropertyShortlist")
+
+  // Customers who have archieved this customer
+  archivedBy CustomerArchive[] @relation("CustomerArchivedByAdmin")
 
   // INDEXES (put here at bottom)
   @@index([ContactNumber])

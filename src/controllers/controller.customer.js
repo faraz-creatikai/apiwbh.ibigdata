@@ -3560,3 +3560,126 @@ export const updateShortlistStatus = async (req, res, next) => {
     next(new ApiError(500, error.message));
   }
 };
+
+
+// archieve customer
+
+// ─── Archive a Customer (individual, hides only for this admin) ──────────────
+export const archiveCustomer = async (req, res, next) => {
+  try {
+    const admin = req.admin;
+    const { id } = req.params;
+    const adminId = admin.id || admin._id;
+
+    const customer = await prisma.customer.findUnique({ where: { id } });
+    if (!customer) return res.status(404).json({ success: false, message: "Customer not found" });
+
+    // upsert so a double-click / re-fire doesn't throw a unique constraint error
+    const archived = await prisma.customerArchive.upsert({
+      where: { customerId_adminId: { customerId: id, adminId } },
+      update: {},
+      create: { customerId: id, adminId },
+    });
+
+    return res.status(200).json({ success: true, data: archived });
+  } catch (error) {
+    next(new ApiError(500, error.message));
+  }
+};
+
+// ─── Unarchive a Customer (undo, only removes the caller's own record) ───────
+export const unarchiveCustomer = async (req, res, next) => {
+  try {
+    const admin = req.admin;
+    const { id } = req.params;
+    const adminId = admin.id || admin._id;
+
+    await prisma.customerArchive.deleteMany({
+      where: { customerId: id, adminId },
+    });
+
+    return res.status(200).json({ success: true, message: "Customer unarchived" });
+  } catch (error) {
+    next(new ApiError(500, error.message));
+  }
+};
+
+// ─── Get My Archived Customers ────────────────────────────────────────────────
+export const getArchivedCustomers = async (req, res, next) => {
+  try {
+    const admin = req.admin;
+    const adminId = admin.id || admin._id;
+
+    const {
+      Campaign, City, Location, Keyword,
+      StartDate, EndDate,
+      Limit, Skip = 0,
+    } = req.query;
+
+    const offset = Number(Skip);
+    let AND = [{ archivedBy: { some: { adminId } } }]; // only this admin's archived customers
+
+    if (Campaign) AND.push({ Campaign: { contains: Campaign.trim() } });
+    if (City) AND.push({ City: { contains: City.trim() } });
+    if (Location) AND.push({ Location: { contains: Location.trim() } });
+
+    if (Keyword) {
+      const tokens = Keyword.trim().split(" ").filter(Boolean);
+      const fields = ["customerName", "ContactNumber", "City", "Location", "Campaign", "Description"];
+      AND.push({
+        AND: tokens.map((t) => ({
+          OR: fields.map((field) => ({ [field]: { contains: t } })),
+        })),
+      });
+    }
+
+    const where = { AND };
+
+    const total = await prisma.customer.count({ where });
+
+    let customers = await prisma.customer.findMany({
+      where,
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      skip: offset,
+      take: Limit !== undefined ? Number(Limit) : undefined,
+      include: {
+        AssignTo: true,
+        archivedBy: { where: { adminId }, select: { createdAt: true } }, // so you can show "archived 2d ago"
+      },
+    });
+
+    if (StartDate && EndDate) {
+      const parseDMY = (str) => {
+        if (!str) return null;
+        const parts = str.split("-");
+        if (parts.length !== 3) return null;
+        let day, month, year;
+        if (parts[0].length === 4) [year, month, day] = parts.map(Number);
+        else[day, month, year] = parts.map(Number);
+        const d = new Date(year, month - 1, day);
+        d.setHours(0, 0, 0, 0);
+        return isNaN(d.getTime()) ? null : d;
+      };
+      const start = parseDMY(StartDate);
+      const end = parseDMY(EndDate);
+      if (start && end) {
+        end.setHours(23, 59, 59, 999);
+        customers = customers.filter((c) => {
+          const d = parseDMY(c.CustomerDate);
+          return d && d >= start && d <= end;
+        });
+      }
+    }
+
+    const transformed = await Promise.all(customers.map(transformGetCustomer));
+
+    return res.status(200).json({
+      success: true,
+      total,
+      count: transformed.length,
+      data: transformed,
+    });
+  } catch (error) {
+    next(new ApiError(500, error.message));
+  }
+};

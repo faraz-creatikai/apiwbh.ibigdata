@@ -35,6 +35,9 @@ import {
   getRadarChartStats,
   getCustomerCount,
   getCustomFieldValues,
+  archiveCustomer,
+  unarchiveCustomer,
+  getArchivedCustomers,
 } from "../controllers/controller.customer.js";
 
 import upload from "../config/multer.js";
@@ -151,6 +154,11 @@ customerRoutes.delete("/delete-calllog/:id", deleteCallLogById);
 customerRoutes.get("/closed-deals", protectRoute, getClosedDeals);
 customerRoutes.post("/close-deal/:id",protectRoute,closeDeal);
 customerRoutes.post("/reopen-deal/:id",protectRoute,reopenDeal);
+
+//archieve routes
+customerRoutes.patch("/archive/:id", protectRoute, archiveCustomer);
+customerRoutes.patch("/unarchive/:id", protectRoute, unarchiveCustomer);
+customerRoutes.get("/archived", protectRoute, getArchivedCustomers);
 
 customerRoutes.get("/:id", getCustomerById);
 
