@@ -5,6 +5,7 @@ export const ALLOWED_ORIGINS = [
   "https://ibigdata.in",
   "https://edu.ibigdata.in",
   "https://wbh.ibigdata.in",
+   "https://airbnb.ibigdata.in",
 
 ];
 
