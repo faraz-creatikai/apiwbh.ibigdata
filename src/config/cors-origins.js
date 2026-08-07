@@ -9,4 +9,4 @@ export const ALLOWED_ORIGINS = [
 
 ];
 
-export const clientUrl="https://edu.ibigdata.in";
+export const clientUrl="https://airbnb.ibigdata.in";
