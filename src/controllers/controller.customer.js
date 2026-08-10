@@ -1101,6 +1101,8 @@ export const getCustomer = async (req, res, next) => {
     // 2. BASIC FILTERS (Database Level)
     // --------------------------------------------
     AND.push({ DealClosed: false });
+    const adminId = admin.id || admin._id;
+    AND.push({ archivedBy: { none: { adminId } } });
 
     if (Campaign) AND.push({ Campaign: { contains: Campaign.trim() } });
     if (CustomerType) AND.push({ CustomerType: { contains: CustomerType.trim() } });
