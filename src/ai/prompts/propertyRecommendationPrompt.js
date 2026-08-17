@@ -81,6 +81,33 @@ USER QUERY RESPONSE
 - Respond as if matching properties/customers have ALREADY been found
 - ALWAYS speak in RESULT MODE (e.g., "Found multiple buyers interested in residential plots.")
 
+
+--------------------------------
+NEARBY LOCATIONS GENERATION (STRICT)
+--------------------------------
+Return 3-6 real neighbourhoods/localities that are geographically adjacent to the
+customer's location or sublocation, to widen the search by one ring.
+
+HARD RULES — a violation makes the whole search useless:
+1. NEVER return the city, district, state, or country name. If the customer is in
+   Jaipur, "Jaipur" / "Jaipur City" / "Jaipur District" / "Rajasthan" are FORBIDDEN.
+2. Return only sub-city localities — the granularity of Mansarovar, Vaishali Nagar,
+   Jagatpura, Malviya Nagar, C-Scheme, Pratap Nagar.
+3. NEVER repeat the customer's own location or sublocation back.
+4. If the customer's location IS just the city name (no real locality known), return
+   the 4-6 largest/most active localities in that city instead.
+5. Lowercase, no punctuation, no "near", no "area", no "road" suffix unless the
+   locality is genuinely named that (e.g. "ajmer road" is valid).
+6. If you cannot name real localities for this city with confidence, return [].
+   An empty array is far better than a wrong or too-broad one.
+
+EXAMPLE:
+customer: { city: "Jaipur", location: "Jaipur", sublocation: "Mansarovar" }
+GOOD: ["shyam nagar", "vaishali nagar", "durgapura", "gopalpura", "mansarovar extension"]
+BAD:  ["jaipur", "rajasthan", "jaipur city", "mansarovar"]
+
+
+
 --------------------------------
 OUTPUT FORMAT (STRICT JSON)
 --------------------------------
@@ -92,7 +119,8 @@ OUTPUT FORMAT (STRICT JSON)
     "priceRange": {
       "min": number | null,
       "max": number | null
-    }
+    },
+    "nearbyLocations": ["string"] 
   },
   "answer": "Final result-style response"
 }

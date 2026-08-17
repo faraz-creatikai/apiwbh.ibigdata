@@ -1101,6 +1101,7 @@ export const getCustomer = async (req, res, next) => {
     // 2. BASIC FILTERS (Database Level)
     // --------------------------------------------
     AND.push({ DealClosed: false });
+
     const adminId = admin.id || admin._id;
     AND.push({ archivedBy: { none: { adminId } } });
 
@@ -1571,6 +1572,8 @@ export const createCustomer = async (req, res, next) => {
     next(new ApiError(500, error.message));
   }
 };
+
+
 
 
 export const updateCustomer = async (req, res, next) => {
@@ -2212,9 +2215,7 @@ export const deleteAllCustomers = async (req, res, next) => {
 
 
 
-// ------------------------------------------------------
-//                RECOMMEND CUSTOMER (AI-AGENT)
-// ------------------------------------------------------
+
 
 // ------------------------------------------------------
 //                RECOMMEND CUSTOMER (AI-AGENT)
@@ -2250,7 +2251,7 @@ export const getRecommendedCustomer = async (req, res, next) => {
     // 🔥 AI FILTER GENERATION
     // --------------------------------------------
 
-    const { tokens, fields, priceRange, answer } =
+    const { tokens, fields, priceRange, answer, nearbyLocations } =
       await getRecommendedKeywordSearchData(
         userPrompt,
         baseCustomer,
@@ -2389,6 +2390,7 @@ export const getRecommendedCustomer = async (req, res, next) => {
     }
 
     const where = AND.length ? { AND } : {};
+    
 
     // --------------------------------------------
     // 🔥 FETCH ALL RELEVANT CUSTOMERS
@@ -2400,124 +2402,142 @@ export const getRecommendedCustomer = async (req, res, next) => {
       where,
       include: { AssignTo: true }
     });
+
     // --------------------------------------------
-    // 🔥 3. STRICT CUMULATIVE GEO & TYPE SORT
+    // 🔥 3. STRICT GEO & TYPE RANKING
     // --------------------------------------------
 
-    // Helper to format strings and completely neutralize "N/A" and empty data
+    const GEO_JUNK = new Set(["", "n/a", "na", "other", "others", "none", "null", "-", "unknown"]);
+    const norm = (v) => String(v || "").toLowerCase().trim().replace(/\s+/g, " ");
+
     const safeString = (val) => {
-      if (!val) return "";
-      const cleaned = String(val).toLowerCase().trim();
-      return (cleaned === "n/a" || cleaned === "na") ? "" : cleaned;
+      const n = norm(val);
+      return GEO_JUNK.has(n) ? "" : n;
     };
 
-    // Extract Base Customer's Geography & Type explicitly
     const baseCity = safeString(baseCustomer.City);
-    const baseLoc = safeString(baseCustomer.Location);
-    const baseSubLoc = safeString(baseCustomer.SubLocation);
 
+    /**
+     * ⭐ THE CORE FIX.
+     * Imported rows routinely repeat the city into Location/SubLocation
+     * ("City: Jaipur, Location: Jaipur"). That is NOT a locality — treating it as
+     * one made every Jaipur record look like an exact-location match and buried
+     * the real Mansarovar↔Mansarovar hits. Anything that resolves to the city
+     * name is demoted to "no locality specified".
+     */
+    const cityForms = new Set(
+      baseCity ? [baseCity, `${baseCity} city`, `${baseCity} district`, `${baseCity} dist`, `${baseCity} rural`, `${baseCity} urban`] : []
+    );
+    const localityOf = (val, cityOfRow) => {
+      const s = safeString(val);
+      if (!s) return "";
+      if (cityForms.has(s)) return "";
+      if (cityOfRow && s === cityOfRow) return "";   // row's own Location == its own City
+      return s;
+    };
+
+    const baseLoc = localityOf(baseCustomer.Location, baseCity);
+    const baseSubLoc = localityOf(baseCustomer.SubLocation, baseCity);
     const baseType = safeString(baseCustomer.CustomerType);
     const baseSubType = safeString(baseCustomer.CustomerSubType);
 
-    // Filter AI tokens: Ignore tiny words (like "in", "a") to prevent false positive matches
-    const safeTokens = tokens
-      .map(t => t ? String(t).toLowerCase().trim() : "")
-      .filter(t => t.length > 2);
+    /** Substring match, but only between two REAL localities (handles "Mansarovar Extension"). */
+    const geoHit = (a, b) => !!a && !!b && (a === b || a.includes(b) || b.includes(a));
+
+    /** Property families. A flat buyer should never be shown a commercial shop. */
+    const familyOf = (type, sub) => {
+      const s = `${safeString(type)} ${safeString(sub)}`;
+      if (/\b(plot|land|farm|agricultur|khasra|bigha)\b/.test(s)) return "land";
+      if (/\b(shop|office|commercial|showroom|warehouse|godown|industrial|hotel|restaurant)\b/.test(s)) return "commercial";
+      if (/\b(flat|apartment|house|villa|bhk|residential|kothi|duplex|pg|room|floor)\b/.test(s)) return "residential";
+      return "other";
+    };
+    const baseFamily = familyOf(baseCustomer.CustomerType, baseCustomer.CustomerSubType);
+
+    // Tokens are for SOFT scoring only — never for geo rank. Letting "jaipur"
+    // count as a location match is what made every record look exact.
+    const safeTokens = (tokens || [])
+      .map((t) => norm(t))
+      .filter((t) => t.length > 2 && !cityForms.has(t));
+
+    const safeNearbyLocations = (nearbyLocations || [])
+      .map(norm)
+      .filter((n) => n && !GEO_JUNK.has(n) && !cityForms.has(n) && n !== baseLoc && n !== baseSubLoc);
 
     customers = customers.map((customer) => {
-      let score = 0;
-      let geoRank = 0;
-      let typeRank = 0;
-
       const custCity = safeString(customer.City);
-      const custLoc = safeString(customer.Location);
-      const custSubLoc = safeString(customer.SubLocation);
+      const custLoc = localityOf(customer.Location, custCity);
+      const custSubLoc = localityOf(customer.SubLocation, custCity);
 
+      const cityMatches = geoHit(custCity, baseCity);
+
+      // ── GEO RANK: strict, base-customer only, no tokens ──
+      let geoRank = 0;
+      let geoLabel = "no-geo-match";
+
+      const subHit = geoHit(custSubLoc, baseSubLoc) || geoHit(custSubLoc, baseLoc) || geoHit(custLoc, baseSubLoc);
+      const locHit = geoHit(custLoc, baseLoc);
+      const nearHit = safeNearbyLocations.some((n) => geoHit(custLoc, n) || geoHit(custSubLoc, n));
+
+      if (cityMatches && subHit && locHit) { geoRank = 5; geoLabel = "exact-sublocation"; }
+      else if (cityMatches && subHit) { geoRank = 4.5; geoLabel = "sublocation"; }
+      else if (cityMatches && locHit) { geoRank = 4; geoLabel = "exact-location"; }
+      else if (cityMatches && nearHit) { geoRank = 3; geoLabel = "nearby-location"; }
+      else if (cityMatches) { geoRank = 2; geoLabel = "same-city-only"; }
+      else if (subHit || locHit) { geoRank = 1; geoLabel = "location-no-city"; }
+      else if (nearHit) { geoRank = 0.5; geoLabel = "nearby-no-city"; }
+
+      // ── TYPE RANK ──
       const custType = safeString(customer.CustomerType);
       const custSubType = safeString(customer.CustomerSubType);
+      const custFamily = familyOf(customer.CustomerType, customer.CustomerSubType);
 
-      // --- 1A. HYBRID GEO-MATCH ---
-      const cityMatches = custCity && (
-        (baseCity && custCity.includes(baseCity)) || safeTokens.some(t => custCity.includes(t))
-      );
-      const locMatches = custLoc && (
-        (baseLoc && custLoc.includes(baseLoc)) || safeTokens.some(t => custLoc.includes(t))
-      );
-      const subLocMatches = custSubLoc && (
-        (baseSubLoc && custSubLoc.includes(baseSubLoc)) || safeTokens.some(t => custSubLoc.includes(t))
-      );
+      const typeMatches = geoHit(custType, baseType);
+      const subTypeMatches = geoHit(custSubType, baseSubType);
 
-      // --- 1B. HYBRID TYPE-MATCH ---
-      const typeMatches = custType && (
-        (baseType && custType.includes(baseType)) || safeTokens.some(t => custType.includes(t))
-      );
-      const subTypeMatches = custSubType && (
-        (baseSubType && custSubType.includes(baseSubType)) || safeTokens.some(t => custSubType.includes(t))
-      );
+      let typeRank = 0;
+      if (typeMatches && subTypeMatches) typeRank = 3;
+      else if (typeMatches) typeRank = 2;
+      else if (subTypeMatches) typeRank = 1;
 
-      // --- 2A. ASSIGN STRICT GEO RANK ---
-      if (cityMatches && locMatches && subLocMatches) {
-        geoRank = 4; // TOP PRIORITY: Jaipur + Mansarover + Gujar ki Thadi
-      } else if (cityMatches && locMatches) {
-        geoRank = 3; // SECOND PRIORITY: Jaipur + Mansarover
-      } else if (cityMatches) {
-        geoRank = 2; // THIRD PRIORITY: Jaipur Only
-      } else if (locMatches || subLocMatches) {
-        geoRank = 1; // EDGE CASE: City missing, but location hit
-      } else {
-        geoRank = 0; // Complete geo mismatch
-      }
+      // A flat buyer matched to a commercial shop is worse than a flat buyer in
+      // the wrong locality — family outranks geography.
+      const familyRank =
+        baseFamily === "other" || custFamily === "other" ? 1 :
+        custFamily === baseFamily ? 2 : 0;
 
-      // --- 2B. ASSIGN STRICT TYPE RANK ---
-      if (typeMatches && subTypeMatches) {
-        typeRank = 2; // TOP TYPE: Residential + Flat
-      } else if (typeMatches || subTypeMatches) {
-        typeRank = 1; // SECOND TYPE: Residential only, or Flat only
-      } else {
-        typeRank = 0; // Complete type mismatch
-      }
-
-      // --- 3. CALCULATE SOFT SCORE (Remaining AI Tokens) ---
+      // ── SOFT SCORE: tokens live here, and only here ──
+      let score = 0;
       if (safeTokens.length > 0) {
-        safeTokens.forEach((tokenLower) => {
-          const validFields = [
-            "Description", "CustomerType", "CustomerSubType",
-            "LeadType", "customerName", "City", "Location", "SubLocation"
-          ];
-
-          const hasToken = validFields.some((field) => {
-            const val = customer[field];
-            return val && String(val).toLowerCase().includes(tokenLower);
-          });
-
-          if (hasToken) score += 1;
+        const validFields = ["Description", "CustomerType", "CustomerSubType", "LeadType", "SubLocation", "Adderess", "Facillities"];
+        safeTokens.forEach((t) => {
+          if (validFields.some((f) => customer[f] && norm(customer[f]).includes(t))) score += 1;
         });
       }
 
-      return { ...customer, _geoRank: geoRank, _typeRank: typeRank, _matchScore: score };
+      return { ...customer, _geoRank: geoRank, _geoLabel: geoLabel, _typeRank: typeRank, _familyRank: familyRank, _matchScore: score };
     });
 
-    // --- 4. EXECUTE MULTI-LEVEL SORTING ---
+    // Drop hard family mismatches entirely (set STRICT_FAMILY=false to only demote them).
+    const STRICT_FAMILY = process.env.RECO_STRICT_FAMILY !== "false";
+    if (STRICT_FAMILY && baseFamily !== "other") {
+      customers = customers.filter((c) => c._familyRank > 0);
+    }
+
+    // Optional: hide pure "same city, nothing else" noise once you have real matches.
+    const MIN_GEO = Number(process.env.RECO_MIN_GEO_RANK || 0);
+    if (MIN_GEO > 0) {
+      const strong = customers.filter((c) => c._geoRank >= MIN_GEO);
+      if (strong.length >= 10) customers = strong;
+    }
+
+    // --- MULTI-LEVEL SORT ---
     customers.sort((a, b) => {
-      // Level 1: Strict Geo-Chain Rank 
-      if (b._geoRank !== a._geoRank) {
-        return b._geoRank - a._geoRank;
-      }
-
-      // Level 2: Strict Type Rank (Inside the exact same Geography, pull exact Types to the top)
-      if (b._typeRank !== a._typeRank) {
-        return b._typeRank - a._typeRank;
-      }
-
-      // Level 3: Soft AI Token Matches
-      if (b._matchScore !== a._matchScore) {
-        return b._matchScore - a._matchScore;
-      }
-
-      // Level 4: Recency (newest first)
-      const aTime = new Date(a.updatedAt || a.createdAt).getTime();
-      const bTime = new Date(b.updatedAt || b.createdAt).getTime();
-      return bTime - aTime;
+      if (b._familyRank !== a._familyRank) return b._familyRank - a._familyRank;
+      if (b._geoRank !== a._geoRank) return b._geoRank - a._geoRank;
+      if (b._typeRank !== a._typeRank) return b._typeRank - a._typeRank;
+      if (b._matchScore !== a._matchScore) return b._matchScore - a._matchScore;
+      return new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime();
     });
 
     // --------------------------------------------
@@ -2533,9 +2553,11 @@ export const getRecommendedCustomer = async (req, res, next) => {
       count: transformed.length,
       data: transformed,
       aiAnswer: answer,
-      appliedFilters: {
-        tokens,
-        fields,
+     appliedFilters: {
+        tokens: safeTokens,
+        nearbyLocations: safeNearbyLocations,
+        baseFamily,
+        baseGeo: { city: baseCity, location: baseLoc || "(city-only)", sublocation: baseSubLoc || "(none)" },
         priceRange
       }
     });

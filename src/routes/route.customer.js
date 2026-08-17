@@ -107,6 +107,7 @@ customerRoutes.post(
   createCustomer
 );
 
+
 customerRoutes.put(
   "/:id",
   upload.fields([

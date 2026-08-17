@@ -51,6 +51,7 @@ import tabblyRoutes from "./routes/route.tabbly.js";
 import videoProjectRoutes from "./routes/route.videoProject.js";
 import path from "path";
 import brandRoutes from "./routes/brandRoutes.js";
+import mcpRoutes from "./routes/route.mcp.js";
 
 const app = express();
 app.use(cookieParser());
@@ -113,10 +114,9 @@ app.use("/api/salesscript",salesScriptRoutes);
 app.use("/api/tabbly",tabblyRoutes);
 app.use("/api/video-project", videoProjectRoutes);
 
+app.use("/api/mcp",mcpRoutes);
+
 app.use(errorHandler);
 
 
 export default app;
-
-
-

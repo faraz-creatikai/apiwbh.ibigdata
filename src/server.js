@@ -43,3 +43,7 @@ server.listen(PORT, async () => {
     catch (err) { console.error("Upload cleanup error:", err); }
   }, 15 * 60 * 1000);
 });
+
+server.timeout = 600000; 
+server.keepAliveTimeout = 600000;
+server.headersTimeout = 601000;

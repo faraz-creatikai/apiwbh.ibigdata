@@ -12,6 +12,7 @@
   "dependencies": {
     "@google/genai": "^1.38.0",
     "@hapi/boom": "^10.0.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@prisma/client": "^6.19.2",
     "@whiskeysockets/baileys": "^7.0.0-rc13",
     "apify-client": "^2.23.0",
@@ -49,7 +50,8 @@
     "response-time": "^2.3.4",
     "socket.io": "^4.8.3",
     "twilio": "^5.10.6",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",

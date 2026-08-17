@@ -1,5 +1,6 @@
 
 import { getDynamicAIContext } from "../config/aiClientFactory.js";
+import { BRAND } from "../config/brand.js";
 import { gemini } from "../config/gemini.js";
 import { openai } from "../config/openai.js";
 import { fetchTabblyAgentPrompt } from "../controllers/controller.tabbly.js";
@@ -7,7 +8,7 @@ import { countSpokenWords } from "../jobs/ttsService.js";
 import { buildCallingAgentSystemPrompt, callingAgentSystemPrompt } from "./prompts/callingAgentPrompt.js";
 import { dataminingPrompt, miningDataPrompt } from "./prompts/dataminingAgentPrompt.js";
 import { emailCampaignPrompt } from "./prompts/emailCampaignPrompt.js";
-import { followupPrompt } from "./prompts/followupPrompt.js";
+import { buildCustomerContext, buildHistoryContext, buildPrompt, followupPrompt } from "./prompts/followupPrompt.js";
 import { keywordSearchPrompt } from "./prompts/keywordSearchPrompt.js";
 import { propertyRecommendationPrompt } from "./prompts/propertyRecommendationPrompt.js";
 import { qualifyCustomerPrompt } from "./prompts/qualifyCustomerPrompt.js";
@@ -65,7 +66,7 @@ async function executeDynamicPrompt(client, model, provider, promptText) {
       temperature: 0.2
     });
     return response.choices?.[0]?.message?.content;
-    
+
   } else if (provider === "GEMINI") {
     const response = await client.models.generateContent({
       model: model,
@@ -76,7 +77,7 @@ async function executeDynamicPrompt(client, model, provider, promptText) {
       }
     });
     return response?.text;
-    
+
   } else if (provider === "GROQ") {
     // Groq uses the exact same API structure as OpenAI!
     const response = await client.chat.completions.create({
@@ -86,7 +87,7 @@ async function executeDynamicPrompt(client, model, provider, promptText) {
       temperature: 0.2
     });
     return response.choices?.[0]?.message?.content;
-    
+
   } else {
     // Ready for you to add ANTHROPIC, etc. later!
     throw new Error(`Unsupported AI Provider: ${provider}`);
@@ -121,26 +122,135 @@ export async function keywordSearchAgentOpenai(userPrompt) {
   return safeJsonParse(raw);
 }
 
-export async function followupAgent(userPrompt) {
+
+
+// ─────────────────────Follow-up Agent Area───────────────────────────────────────
+
+const STATUS = ["Interested", "Not Interested", "Callback Later", "No Response", "Converted", "Wrong Number"];
+const DNC = ["Not Interested", "Wrong Number"];
+const NEXT_DAYS = { Interested: 2, "Callback Later": 3, "No Response": 3 };
+
+const today = () =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+
+const addDays = (iso, n) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().split("T")[0];
+};
+
+
+
+/** Domains this specific customer's own links live on, so they don't get stripped. */
+function customerDomains(c = {}) {
+  const out = [];
+  for (const u of [c.URL, c.GoogleMap, c.Video]) {
+    try { if (u) out.push(new URL(u).hostname.replace(/^www\./, "").toLowerCase()); } catch { /* skip */ }
+  }
+  return out;
+}
+
+
+/**
+ * @param {string} userPrompt   the rep's note
+ * @param {object} opts { customer, history, language, channels }
+ */
+export async function followupAgent(userPrompt, opts = {}) {
+  const {
+    customer: rawCustomer = {},
+    history: rawHistory = [],
+    language = "hinglish",
+    channels = { whatsapp: true, email: true },
+  } = opts;
+
+  const t = today();
+  const customer = buildCustomerContext(rawCustomer);
+  const history = buildHistoryContext(rawHistory);
+
   const { client, model, provider } = await getDynamicAIContext("GEMINI", "models/gemini-2.5-flash");
+  const raw = await executeDynamicPrompt(
+    client, model, provider,
+    `${buildPrompt(t, language, channels, customer, history)}\n\nUser input:\n${userPrompt}`
+  );
 
-  const promptText = `${followupPrompt}\n\nUser input:\n${userPrompt}`;
-  const raw = await executeDynamicPrompt(client, model, provider, promptText);
+  if (!raw || !raw.trim()) throw new Error("AI returned empty response");
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("Invalid AI response format");
+  const ai = safeJsonParse(match[0]);
+  if (!ai) throw new Error("AI response was not parsable JSON");
 
-  console.log(" raw ", raw)
+  // ── repair the model instead of trusting it ──
+  const d = ai.data || {};
+  const StatusType = STATUS.find((s) => s.toLowerCase() === String(d.StatusType || "").trim().toLowerCase()) || "No Response";
 
-  if (!raw || !raw.trim()) {
-    throw new Error("AI returned empty response");
+  let FollowupNextDate = null;
+  if (!DNC.includes(StatusType) && StatusType !== "Converted") {
+    const v = d.FollowupNextDate;
+    FollowupNextDate = /^\d{4}-\d{2}-\d{2}$/.test(v || "") && v > t ? v : addDays(t, NEXT_DAYS[StatusType] || 2);
   }
 
-  // Extract JSON safely
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  const blocked = DNC.includes(StatusType);
+  const allowed = [hostOf(BRAND.website), ...customerDomains(rawCustomer)].filter(Boolean);
 
-  if (!jsonMatch) {
-    throw new Error("Invalid AI response format");
-  }
+  return {
+    data: {
+      StartDate: t,
+      StatusType,
+      FollowupNextDate,
+      Description: String(d.Description || "").trim() || `Interaction logged as ${StatusType}.`,
+    },
+    whatsapp: blocked || !channels.whatsapp ? null : cleanWa(ai.whatsapp, allowed),
+    email:
+      blocked || !channels.email || !ai.email?.subject || !ai.email?.body
+        ? null
+        : {
+          subject: String(ai.email.subject).trim().slice(0, 120),
+          body: cleanHtml(ai.email.body, allowed) + emailSignature(),
+        },
+    message: String(ai.message || "").trim() || "Review the follow-up.",
+  };
+}
 
-  return safeJsonParse(jsonMatch[0]);
+/* ── helpers ── */
+const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, "").toLowerCase(); } catch { return null; } };
+const URL_RE = /\bhttps?:\/\/[^\s<>"')]+/gi;
+
+const isAllowed = (url, allowed) => {
+  const h = hostOf(url);
+  return !!h && allowed.some((d) => h === d || h.endsWith(`.${d}`));
+};
+
+function cleanWa(text, allowed) {
+  if (!text) return null;
+  let out = String(text)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  // Kill any URL the model invented — a 404 in front of a customer is worse than no link.
+  out = out.replace(URL_RE, (u) => (isAllowed(u, allowed) ? u : "")).replace(/ {2,}/g, " ").trim();
+  // A leftover {{Token}} means personalisation failed — don't ship it.
+  out = out.replace(/\{\{\s*[\w.]+\s*\}\}/g, "").trim();
+  return out ? `${out}\n\n— ${BRAND.signAs}\n${BRAND.website.replace(/^https?:\/\//, "")}` : null;
+}
+
+function cleanHtml(html, allowed) {
+  let out = String(html)
+    .replace(/<\s*(script|style|iframe|link|meta)[\s\S]*?<\s*\/\s*\1\s*>/gi, "")
+    .replace(/<\/?(html|head|body)[^>]*>/gi, "")
+    .replace(/\son\w+\s*=\s*(".*?"|'.*?')/gi, "");
+  out = out.replace(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (full, href, label) => (isAllowed(href, allowed) ? full : label));
+  return out.replace(/\{\{\s*[\w.]+\s*\}\}/g, "").trim();
+}
+
+function emailSignature() {
+  return `<div style="margin-top:24px;padding-top:16px;border-top:1px solid #e5e5e5;font-family:Arial,sans-serif;font-size:13px;color:#555;">
+<strong style="color:#222;">${BRAND.signAs}</strong><br>
+<a href="${BRAND.website}" style="color:#555;">${BRAND.website}</a><br>
+${BRAND.phone ? `${BRAND.phone}<br>` : ""}<a href="mailto:${BRAND.email}" style="color:#555;">${BRAND.email}</a>
+</div>`;
 }
 
 export async function QualifyAgent(userPrompt) {
@@ -561,7 +671,7 @@ export async function VideoScriptGenerationAgent(photoLabels, propertyDetails, m
           : "";
 
       const promptText = `${videoScriptGenerationPrompt}\nDATA:\n${JSON.stringify(payload, null, 2)}${retryNote}`;
-     
+
       const raw = await executeDynamicPrompt(client, model, provider, promptText);
 
       if (!raw || !raw.trim()) {

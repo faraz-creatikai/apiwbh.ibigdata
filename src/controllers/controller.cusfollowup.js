@@ -3,6 +3,10 @@ import { PrismaClient } from "@prisma/client";
 import ApiError from "../utils/ApiError.js";
 import { followupAgent } from "../ai/agent.js";
 import { notifyCustomerFollowupTaken, notifyFollowupNext } from "../jobs/notification/notificationEvents.js";
+import { getCustomerAccessFilter } from "./controller.customer.js";
+import { replacePlaceholders } from "./controller.messages.js";
+import { sendBaileysWhatsApp } from "../config/twilio.js";
+import { sendEmail } from "../config/mailer.js";
 
 const prisma = new PrismaClient();
 
@@ -84,66 +88,217 @@ const transformFollowup = (followup) => ({
 
 
 // ai followup 
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Above this, per-customer drafting is too slow/expensive — one copy is reused.
+const PERSONALIZE_LIMIT = Number(process.env.FOLLOWUP_PERSONALIZE_LIMIT || 30);
+const AI_CONCURRENCY = Number(process.env.FOLLOWUP_AI_CONCURRENCY || 4);
+
+const historyFor = (customerId) =>
+  prisma.followup.findMany({
+    where: { customerId },
+    orderBy: { createdAt: "desc" },
+    take: 5,
+    select: { StartDate: true, StatusType: true, Description: true, FollowupNextDate: true, createdAt: true },
+  }).then((rows) => rows.reverse());
+
+async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (cursor < items.length) {
+        const i = cursor++;
+        out[i] = await fn(items[i], i);
+      }
+    })
+  );
+  return out;
+}
+
 export const createFollowupByAI = async (req, res, next) => {
   try {
     const admin = req.admin;
-    const { customerIds = [], userPrompt } = req.body;
+    const {
+      customerIds = [],
+      userPrompt,
+      language = "hinglish",
+      sendWhatsapp = true,
+      sendEmail: emailOn = true,
+      confirm = false,
+      drafts = null,      // reviewed drafts coming back from the UI
+    } = req.body;
 
-    // ❌ No params usage anymore
-    // const { customerId } = req.params;
-
-    // ✅ Validate input
-    if (!userPrompt) {
-      return next(new ApiError(400, "userPrompt is required"));
-    }
-
-    if (!Array.isArray(customerIds) || customerIds.length === 0) {
+    if (!userPrompt) return next(new ApiError(400, "userPrompt is required"));
+    if (!Array.isArray(customerIds) || customerIds.length === 0)
       return next(new ApiError(400, "customerIds must be a non-empty array"));
-    }
 
-    // ✅ Fetch customers
     const customers = await prisma.customer.findMany({
-      where: {
-        id: { in: customerIds },
-      },
+      where: { id: { in: customerIds } },
     });
+    if (!customers.length) return next(new ApiError(404, "No contactable customers found"));
 
-    if (!customers.length) {
-      return next(new ApiError(404, "No customers found"));
+    const channels = { whatsapp: sendWhatsapp, email: emailOn };
+    const adminId = admin?.id || admin?._id || null;
+    const personalize = customers.length <= PERSONALIZE_LIMIT;
+
+    /* ══════════ STEP 1: DRAFT — one message per customer, nothing saved ══════════ */
+    if (!confirm) {
+      let generated;
+
+      if (personalize) {
+        generated = await mapWithConcurrency(customers, AI_CONCURRENCY, async (c) => {
+          try {
+            const ai = await followupAgent(userPrompt, {
+              customer: c,
+              history: await historyFor(c.id),
+              language,
+              channels,
+            });
+            return {
+              customerId: c.id,
+              name: c.customerName,
+              email: c.Email || null,
+              phone: c.ContactNumber || null,
+              data: ai.data,
+              whatsapp: ai.whatsapp,
+              emailContent: ai.email,
+              aiMessage: ai.message,
+              error: null,
+            };
+          } catch (err) {
+            return {
+              customerId: c.id, name: c.customerName,
+              email: c.Email || null, phone: c.ContactNumber || null,
+              data: null, whatsapp: null, emailContent: null, aiMessage: null,
+              error: err.message,
+            };
+          }
+        });
+      } else {
+        // Too many for per-customer drafting: one copy, {{Name}} tokens filled at send.
+        const ai = await followupAgent(userPrompt, {
+          customer: customers[0],
+          history: await historyFor(customers[0].id),
+          language,
+          channels,
+        });
+        generated = customers.map((c) => ({
+          customerId: c.id, name: c.customerName,
+          email: c.Email || null, phone: c.ContactNumber || null,
+          data: ai.data, whatsapp: ai.whatsapp, emailContent: ai.email,
+          aiMessage: ai.message, error: null,
+        }));
+      }
+
+      const ok = generated.filter((d) => !d.error);
+
+      return res.status(200).json({
+        success: true,
+        preview: true,
+        personalized: personalize,
+        drafts: generated,
+        // summary for the header — the classification is per-customer but usually agrees
+        data: ok[0]?.data || null,
+        aiMessage: ok[0]?.aiMessage || null,
+        failed: generated.length - ok.length,
+        willSendTo: {
+          whatsapp: ok.filter((d) => d.whatsapp && d.phone).length,
+          email: ok.filter((d) => d.emailContent && d.email).length,
+        },
+        note: personalize
+          ? "Each customer got their own message. Review and edit any of them before sending."
+          : `Over ${PERSONALIZE_LIMIT} customers — one copy is reused for everyone.`,
+      });
     }
 
-    // ✅ Call AI once
-    const aiResponse = await followupAgent(userPrompt);
+    /* ══════════ STEP 2: SEND — uses the reviewed drafts verbatim, no new AI calls ══════════ */
+    if (!Array.isArray(drafts) || !drafts.length)
+      return next(new ApiError(400, "drafts are required when confirm is true"));
 
-    if (!aiResponse?.data) {
-      return next(new ApiError(500, "AI failed"));
-    }
+    const byId = new Map(customers.map((c) => [c.id, c]));
+    // Only accept drafts for customers actually in this request.
+    const queue = drafts.filter((d) => byId.has(d.customerId));
+    if (!queue.length) return next(new ApiError(400, "No drafts matched the selected customers"));
 
-    const aiData = aiResponse.data;
+    const results = [];
+    const waQueue = queue.filter((d) => d.whatsapp && byId.get(d.customerId)?.ContactNumber);
+    let waDone = 0;
 
-    // ✅ Create followups for all customers
-    const followups = await Promise.all(
-      customers.map((customer) =>
-        prisma.followup.create({
+    for (const d of queue) {
+      const c = byId.get(d.customerId);
+      const sent = [];
+      const errors = [];
+
+      const followData = d.data || {};
+
+      try {
+        await prisma.followup.create({
           data: {
-            customerId: customer.id,
-            ...aiData,
-            CreatedById: admin.id || admin._id,
+            customerId: c.id,
+            StartDate: followData.StartDate || null,
+            StatusType: followData.StatusType || null,
+            FollowupNextDate: followData.FollowupNextDate || null,
+            Description: followData.Description || null,
+            CreatedById: adminId,
           },
-        })
-      )
-    );
+        });
+      } catch (err) {
+        errors.push(`followup: ${err.message}`);
+      }
+
+
+      if (d.whatsapp && c.ContactNumber) {
+        try {
+          const clean = c.ContactNumber.replace(/[^\d]/g, "");
+          const phone = clean.length === 10 ? `${process.env.DEFAULT_COUNTRY_CODE || "91"}${clean}` : clean;
+          await sendBaileysWhatsApp(phone, replacePlaceholders(d.whatsapp, c));
+          sent.push("whatsapp");
+        } catch (err) {
+          errors.push(`whatsapp: ${err.message}`);
+        }
+        waDone++;
+        // ⚠️ BAN PROTECTION — human-like gap between numbers.
+        if (waDone < waQueue.length) await delay(3000 + Math.floor(Math.random() * 4000));
+      }
+
+      if (d.emailContent?.subject && d.emailContent?.body && c.Email) {
+        try {
+          await sendEmail(
+            c.Email,
+            replacePlaceholders(d.emailContent.subject, c),
+            replacePlaceholders(d.emailContent.body, c)
+          );
+          sent.push("email");
+        } catch (err) {
+          errors.push(`email: ${err.message}`);
+        }
+      }
+
+      results.push({
+        id: c.id,
+        name: c.customerName,
+        statusType: followData.StatusType,
+        sent,
+        ...(errors.length ? { errors } : {}),
+      });
+    }
 
     res.status(201).json({
       success: true,
-      message: "Follow-ups created via AI",
-      count: followups.length,
-      aiMessage: aiResponse.message,
+      message: "Follow-ups created",
+      count: results.length,
+      whatsappSent: results.filter((r) => r.sent.includes("whatsapp")).length,
+      emailSent: results.filter((r) => r.sent.includes("email")).length,
+      skipped: customerIds.length - customers.length,
+      results,
     });
   } catch (error) {
     next(new ApiError(500, error.message));
   }
 };
+
+
 
 // ---------------------------------------------------
 //  CREATE FOLLOWUP
@@ -173,10 +328,10 @@ export const createFollowup = async (req, res, next) => {
 
 
 
-        // if next date is today, notify immediately
+    // if next date is today, notify immediately
     const today = new Date();
-    const dd   = String(today.getDate()).padStart(2, "0");
-    const mm   = String(today.getMonth() + 1).padStart(2, "0");
+    const dd = String(today.getDate()).padStart(2, "0");
+    const mm = String(today.getMonth() + 1).padStart(2, "0");
     const yyyy = today.getFullYear();
     const todayStr = `${dd}-${mm}-${yyyy}`;
 
@@ -197,122 +352,145 @@ export const createFollowup = async (req, res, next) => {
 // ---------------------------------------------------
 //  GET ALL FOLLOWUPS (FILTERS + PAGINATION)
 // ---------------------------------------------------
+
 export const getFollowups = async (req, res, next) => {
   try {
     const admin = req.admin;
 
     const {
-      page = 1,
-      limit,
-      keyword = "",
-      StatusType,
-      Campaign,
-      CustomerSubType,
-      PropertyType,
-      City,
-      Location,
-      User,
+      page = 1, limit, keyword = "", StatusType, Campaign, CustomerSubType, PropertyType, City, Location, User,
     } = req.query;
 
     const pageNum = Math.max(1, parseInt(page, 10));
-
     const isPaginated = limit !== undefined;
     const perPage = isPaginated ? Math.max(1, parseInt(limit, 10)) : null;
     const skip = isPaginated ? (pageNum - 1) * perPage : undefined;
 
     // -------------------------
-    // FOLLOWUP FILTER
+    // 1. FOLLOWUP FILTER (Ensures they only see followups they took)
     // -------------------------
     const whereFollowup = {};
     if (StatusType) whereFollowup.StatusType = StatusType.trim();
     if (admin.role !== "administrator") {
-      whereFollowup.CreatedById = admin.id;
+      whereFollowup.CreatedById = admin.id || admin._id;
     }
+    const followupFilter = Object.keys(whereFollowup).length > 0 ? whereFollowup : {};
 
     // -------------------------
-    // CUSTOMER FILTER
+    // 2. CUSTOMER FIELD FILTERS (Query Params)
     // -------------------------
-    const customerFilter = {};
-
-    if (Campaign) customerFilter.Campaign = { contains: Campaign.trim() };
-    if (PropertyType)
-      customerFilter.CustomerType = { contains: PropertyType.trim() };
-    if (CustomerSubType)
-      customerFilter.CustomerSubType = { contains: CustomerSubType.trim() };
-    if (City) customerFilter.City = { contains: City.trim() };
-    if (Location) customerFilter.Location = { contains: Location.trim() };
-
+    const fieldFilters = {};
+    if (Campaign) fieldFilters.Campaign = { contains: Campaign.trim() };
+    if (PropertyType) fieldFilters.CustomerType = { contains: PropertyType.trim() };
+    if (CustomerSubType) fieldFilters.CustomerSubType = { contains: CustomerSubType.trim() };
+    if (City) fieldFilters.City = { contains: City.trim() };
+    if (Location) fieldFilters.Location = { contains: Location.trim() };
     if (User) {
-      customerFilter.AssignTo = {
-        some: {
-          name: { contains: User.trim() },
-        },
-      };
-    }
-    if (admin.role === "city_admin") {
-      customerFilter.City = { contains: admin.city };
+      fieldFilters.AssignTo = { some: { name: { contains: User.trim() } } };
     }
 
-    if (admin.role === "city_admin" && admin.clientId) {
-      customerFilter.City = { contains: admin.city };
-      customerFilter.ClientId = { contains: admin.clientId };
-    }
-    if (admin.role === "user") {
-      customerFilter.AssignTo = {
-        some: { id: admin.id },
-      };
-    }
-
+    // -------------------------
+    // 3. KEYWORD FILTER
+    // -------------------------
+    let keywordFilter = null;
     if (keyword) {
       const kw = keyword.trim();
-      customerFilter.OR = [
-        { customerName: { contains: kw } },
-        { ContactNumber: { contains: kw } },
-        { Email: { contains: kw } },
-        { City: { contains: kw } },
-        { Location: { contains: kw } },
-      ];
+      keywordFilter = {
+        OR: [
+          { customerName: { contains: kw } },
+          { ContactNumber: { contains: kw } },
+          { Email: { contains: kw } },
+          { City: { contains: kw } },
+          { Location: { contains: kw } },
+        ],
+      };
     }
 
+    // -------------------------
+    // 4. CUSTOMER ACCESS FILTER (Ensures customer was created/assigned to them)
+    // -------------------------
+    // Await the new async access filter
+    const accessFilter = await getCustomerAccessFilter(admin);
+
+    // -------------------------
+    // 5. MERGE ALL FILTERS SAFELY
+    // -------------------------
+    // Use an AND array to prevent Prisma from overwriting overlapping keys (like OR / AND)
+    const combinedConditions = [];
+
+    if (Object.keys(accessFilter).length > 0) combinedConditions.push(accessFilter);
+    if (Object.keys(fieldFilters).length > 0) combinedConditions.push(fieldFilters);
+    if (keywordFilter) combinedConditions.push(keywordFilter);
+
     const where = {
-      ...whereFollowup,
-      customer: Object.keys(customerFilter).length
-        ? customerFilter
-        : undefined,
+      ...(combinedConditions.length > 0 ? { AND: combinedConditions } : {}),
+      followups: { some: followupFilter } // Only fetches customers that have valid followups
     };
 
     // -------------------------
-    // FETCH DATA
+    // 6. FETCH DATA
     // -------------------------
-    const [total, followups] = await Promise.all([
-      prisma.followup.count({ where }),
-      prisma.followup.findMany({
+    const [total, customers] = await Promise.all([
+      prisma.customer.count({ where }),
+      prisma.customer.findMany({
         where,
         include: {
-          customer: { include: { AssignTo: true } },
-          CreatedBy: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-              role: true,
+          AssignTo: true,
+          followups: {
+            where: followupFilter,
+            orderBy: { createdAt: "desc" },
+            include: {
+              CreatedBy: { select: { id: true, name: true, email: true, role: true } },
             },
-          }
+          },
         },
-        ...(isPaginated && { skip, take: perPage }), // ✅ CONDITIONAL
-        orderBy: { createdAt: "desc" },
+        ...(isPaginated && { skip, take: perPage }),
+        orderBy: { updatedAt: "desc" },
       }),
     ]);
 
     // -------------------------
-    // RESPONSE
+    // 7. MAP RESPONSE FOR TABLE
     // -------------------------
+    const mappedCustomers = customers.map((customer) => {
+      const uniqueUsers = [...new Set(
+        customer.followups.map(f => f.CreatedBy?.name).filter(Boolean)
+      )].join(", ");
+
+      const latestFollowup = customer.followups[0] || {};
+
+      return {
+        _id: latestFollowup.id || customer.id,
+        customer: {
+          ...customer,
+          _id: customer.id,
+        },
+        StartDate: latestFollowup.StartDate || "",
+        StatusType: latestFollowup.StatusType || "",
+        FollowupNextDate: latestFollowup.FollowupNextDate || "",
+        Description: latestFollowup.Description || "",
+        CreatedBy: latestFollowup.CreatedBy || null,
+        createdAt: latestFollowup.createdAt || customer.updatedAt,
+        updatedAt: latestFollowup.updatedAt || customer.updatedAt,
+
+        Campaign: customer.Campaign || "",
+        CustomerType: customer.CustomerType || "",
+        CustomerSubType: customer.CustomerSubType || "",
+        City: customer.City || "",
+        Location: customer.Location || "",
+        ReferenceId: customer.ReferenceId || "",
+        customerName: customer.customerName || "",
+        ContactNumber: customer.ContactNumber || "",
+        User: uniqueUsers || "N/A",
+      };
+    });
+
     res.status(200).json({
       success: true,
       total,
       currentPage: isPaginated ? pageNum : 1,
       totalPages: isPaginated ? Math.ceil(total / perPage) : 1,
-      data: followups.map(transformFollowup),
+      data: mappedCustomers,
     });
   } catch (error) {
     next(new ApiError(500, error.message));
@@ -326,9 +504,19 @@ export const getFollowupByCustomer = async (req, res, next) => {
   try {
     const { customerId } = req.params;
 
+    const admin = req.admin; // 1. Extract the admin/user
+
+    // 2. Build the where clause dynamically
+    const whereClause = { customerId };
+
+    // 3. Add the restriction for non-admins
+    if (admin.role !== "administrator") {
+      whereClause.CreatedById = admin.id || admin._id;
+    }
+
     const followups = await prisma.followup.findMany({
-      where: { customerId },
-      include: { customer: true }, // just to get customer.id
+      where: whereClause,
+      include: { customer: true, CreatedBy: { select: { name: true } }, }, // just to get customer.id
       orderBy: { createdAt: "desc" },
     });
 
@@ -339,6 +527,7 @@ export const getFollowupByCustomer = async (req, res, next) => {
       StatusType: f.StatusType,
       FollowupNextDate: f.FollowupNextDate,
       Description: f.Description,
+      CreatedBy: f.CreatedBy?.name || "N/A",
       createdAt: f.createdAt,
       updatedAt: f.updatedAt,
       __v: 0, // to match MongoDB format

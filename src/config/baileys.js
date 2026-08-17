@@ -5,21 +5,14 @@ import { getSocket } from '../socket/socket.js';
 import fs from 'fs/promises';
 import pino from 'pino';
 
-// 👇 CHANGED: was 3 hand-tuned constants (SEED/MIN/MAX) used to *guess* the QR refresh
-// interval by measuring the gap between successive `qr` events — unreliable (event-loop
-// jitter, no prior sample for the very first QR) and could show the UI a countdown that
-// doesn't match when the code actually dies.
-//
-// Verified directly against Baileys' source (src/Socket/socket.ts, the `genPairQR` loop
+// Verified against Baileys' source (src/Socket/socket.ts, the `genPairQR` loop
 // that fires on the `pair-device` stanza):
 //   let qrMs = qrTimeout || 60_000   // time to let a QR live
-//   ...
 //   qrTimer = setTimeout(genPairQR, qrMs)
 //   qrMs = qrTimeout || 20_000       // shorter subsequent qrs
-// i.e. when `qrTimeout` is left unset (as we do — see makeWASocket() below, we deliberately
-// do NOT set it), the FIRST QR of a pairing attempt lives 60s, and every QR after that lives
-// only 20s. These two numbers are hardcoded in Baileys itself, not configurable defaults we
-// can read from a field — so we mirror them exactly instead of estimating anything.
+// When `qrTimeout` is left unset (as we do), the FIRST QR of an attempt lives 60s
+// and every QR after that lives 20s. Hardcoded in Baileys, not readable from a
+// field — so we mirror the two numbers here for reporting purposes only.
 const FIRST_QR_TIMEOUT_MS = 60_000;
 const SUBSEQUENT_QR_TIMEOUT_MS = 20_000;
 
@@ -28,9 +21,9 @@ let currentSocket = null;
 // ── QR state ─────────────────────────────────────────────────────────
 let latestQR = null;
 let latestQRGeneratedAt = null;
-let latestQRRefreshInterval = null; // the exact ms this specific QR frame will live (60_000 or 20_000)
+let latestQRRefreshInterval = null; // ms this specific QR frame will live (60_000 or 20_000)
 
-// ── Pairing code state (NEW) ─────────────────────────────────────────
+// ── Pairing code state ───────────────────────────────────────────────
 let latestPairingCode = null;
 let pairingCodeGeneratedAt = null;
 let connectionMethod = 'qr'; // 'qr' | 'pairing'
@@ -54,7 +47,7 @@ const resetQRTiming = () => {
   latestQR = null;
   latestQRGeneratedAt = null;
   latestQRRefreshInterval = null;
-  // also clear pairing state — same lifecycle as QR
+  // pairing state shares the same lifecycle as QR
   latestPairingCode = null;
   pairingCodeGeneratedAt = null;
 };
@@ -82,30 +75,31 @@ export const initWhatsApp = async (options = {}) => {
     auth: state,
     markOnlineOnConnect: false,
     printQRInTerminal: false,
-    // 👇 NEW: an explicit, well-known browser fingerprint + no artificial
-    // query timeout. Baileys' own default identity is unreliable for the
-    // pairing-code handshake specifically — QR mode works fine without this,
-    // but pairing needs it to avoid an immediate 428 "Connection Closed".
-    browser: ['Property CRM', 'Chrome', '1.0.0'],
+    // Pairing-code linking validates this far more strictly than QR does.
+    // A custom string works fine for QR but makes WhatsApp reject the pair with
+    // "couldn't link device / check the number" even when the code is correct.
+    browser: method === 'pairing' ? Browsers.macOS('Safari') : ['Property CRM', 'Chrome', '1.0.0'],
     defaultQueryTimeoutMs: undefined,
-    // 👇 NOTE: deliberately NOT setting qrTimeout here. Baileys uses `qrTimeout || 60_000`
-    // for the first QR and `qrTimeout || 20_000` for every one after — passing an explicit
-    // value would apply it to *every* QR uniformly (first included), which changes the real
-    // pairing cadence, not just what we report. Leaving it unset keeps Baileys' native
-    // 60s-first/20s-after behavior intact; see FIRST_QR_TIMEOUT_MS / SUBSEQUENT_QR_TIMEOUT_MS
-    // above, which mirror those same two hardcoded numbers for reporting purposes only.
+    // NOTE: deliberately NOT setting qrTimeout — see the constants at the top.
     logger: pino({ level: 'silent' })
   });
 
-  // 👇 NEW: guards so the pairing request fires exactly once per socket
   let pairingRequestSent = false;
 
   const requestPairing = async () => {
-    if (pairingRequestSent) return;
+    if (pairingRequestSent || myGeneration !== socketGeneration) return;
     pairingRequestSent = true;
 
     try {
-      const cleanNumber = pendingPhoneNumber.replace(/[^0-9]/g, '');
+      let cleanNumber = pendingPhoneNumber.replace(/[^0-9]/g, '');
+
+      // A 10-digit or 0-prefixed number produces a valid-looking code that can never link.
+      if (cleanNumber.length === 10) cleanNumber = `91${cleanNumber}`;
+      else if (cleanNumber.length === 11 && cleanNumber.startsWith('0')) cleanNumber = `91${cleanNumber.slice(1)}`;
+      if (cleanNumber.length < 11 || cleanNumber.length > 15) {
+        throw new Error(`Invalid phone number for pairing: "${cleanNumber}"`);
+      }
+
       const code = await sock.requestPairingCode(cleanNumber);
 
       if (myGeneration !== socketGeneration) return;
@@ -132,21 +126,29 @@ export const initWhatsApp = async (options = {}) => {
     }
   };
 
+  // ⭐ Request the code on a FRESH socket, before Baileys opens a QR pairing
+  // session. Waiting for the `qr` event means the server is already mid-QR-pair,
+  // so the phone code belongs to a session nobody is listening on — that is the
+  // "check the number" alert with a code that looks perfectly correct.
+  // The 3s delay lets the noise handshake finish; firing instantly gives a 428.
+  if (method === 'pairing' && phoneNumber && !state.creds.registered) {
+    setTimeout(() => { requestPairing(); }, 3000);
+  }
+
   sock.ev.on('connection.update', async (update) => {
     if (myGeneration !== socketGeneration) return;
 
     const { connection, lastDisconnect, qr } = update;
     const io = getSocket();
 
-    // 👇 CHANGED: only broadcast QR frames when we're actually in QR mode,
-    // so pairing-mode sessions don't flash a QR code the UI never shows.
+    // Only broadcast QR frames when we're actually in QR mode, so pairing-mode
+    // sessions don't flash a QR code the UI never shows.
     if (qr && connectionMethod !== 'pairing') {
       const now = Date.now();
 
-      // 👇 CHANGED: `latestQR` is null exactly when this is the first `qr` event since the
-      // last reset (fresh socket / fresh attempt) — the same condition, in effect, that
-      // Baileys' own genPairQR loop uses to decide "first vs. subsequent" (see constants
-      // above). So we reuse that existing null-check instead of adding new bookkeeping.
+      // `latestQR` is null exactly when this is the first `qr` event since the
+      // last reset — the same condition Baileys' own genPairQR loop uses to
+      // decide "first vs subsequent" (see constants at the top).
       const isFirstQrOfAttempt = latestQR === null;
       const refreshInterval = isFirstQrOfAttempt ? FIRST_QR_TIMEOUT_MS : SUBSEQUENT_QR_TIMEOUT_MS;
 
@@ -164,21 +166,6 @@ export const initWhatsApp = async (options = {}) => {
       }
     }
 
-    // 👇 FIXED: gate strictly on `qr`, matching Baileys' own recommended
-    // pattern. `connection === 'connecting'` fires the instant the socket
-    // starts opening — BEFORE the noise handshake completes — so calling
-    // requestPairingCode() on that trigger reproduces the exact "Connection
-    // Closed" (428) bug we were trying to avoid. `qr` only appears once the
-    // handshake is actually done, which is the real readiness signal.
-    if (
-      connectionMethod === 'pairing' &&
-      pendingPhoneNumber &&
-      !state.creds.registered &&
-      qr
-    ) {
-      requestPairing();
-    }
-
     if (connection === 'close') {
       resetQRTiming();
       connectedUserMeta = null;
@@ -193,7 +180,6 @@ export const initWhatsApp = async (options = {}) => {
         return;
       }
 
-    
       const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
       const isConflict = statusCode === DisconnectReason.replaced || statusCode === 409;
       const shouldReconnect = !isLoggedOut;
@@ -205,9 +191,9 @@ export const initWhatsApp = async (options = {}) => {
       if (shouldReconnect) {
         const retryDelay = isConflict ? 5000 : 2000;
 
-        // 👇 NEW: preserve whichever method/number was in flight so a
-        // pairing session survives Baileys' internal "restart required"
-        // reconnects instead of silently falling back to QR mid-flow.
+        // Preserve whichever method/number was in flight so a pairing session
+        // survives Baileys' internal "restart required" reconnects instead of
+        // silently falling back to QR mid-flow.
         const resumeMethod = connectionMethod;
         const resumePhone = pendingPhoneNumber;
 
@@ -219,7 +205,6 @@ export const initWhatsApp = async (options = {}) => {
           }
         }, retryDelay);
       } else {
-        // 👇 FIX: Increased delay to 5000ms (5 seconds) to ensure the network is totally clear
         console.log('❌ Logged out. Waiting for unpair payload to reach Meta...');
 
         setTimeout(async () => {
@@ -230,7 +215,7 @@ export const initWhatsApp = async (options = {}) => {
             console.error("Error deleting folder:", err);
           }
 
-          // 👇 NEW: a logout always resets us back to the default QR flow
+          // A logout always resets us back to the default QR flow
           connectionMethod = 'qr';
           pendingPhoneNumber = null;
 
@@ -289,7 +274,7 @@ export const initWhatsApp = async (options = {}) => {
   isStarting = false;
 };
 
-// 👇 NEW: dedicated entry point the route calls for pairing-code linking.
+// Dedicated entry point the route calls for pairing-code linking.
 // Tears down any idle QR-mode socket first, then restarts in pairing mode.
 export const startPairingConnection = async (phoneNumber) => {
   if (!phoneNumber) {
@@ -303,6 +288,15 @@ export const startPairingConnection = async (phoneNumber) => {
     currentSocket = null;
     isStarting = false;
   }
+
+  // Half-finished creds from an earlier QR attempt make Meta reject the pair.
+  // Safe here — we only reach this path when nobody is logged in.
+  try {
+    await fs.rm('whatsapp-auth-folder', { recursive: true, force: true });
+    console.log('🗑️ Cleared auth folder for a fresh pairing attempt.');
+  } catch { /* folder may not exist */ }
+
+  await new Promise(r => setTimeout(r, 500));
 
   resetQRTiming();
   await initWhatsApp({ method: 'pairing', phoneNumber });
@@ -322,7 +316,7 @@ export const getWhatsAppConnectionState = () => {
     };
   }
 
-  // 👇 NEW: report pairing state so a page refresh mid-pairing still shows the code
+  // Report pairing state so a page refresh mid-pairing still shows the code
   if (connectionMethod === 'pairing' && latestPairingCode) {
     return {
       status: 'pairing',
@@ -337,10 +331,9 @@ export const getWhatsAppConnectionState = () => {
       status: 'scanning',
       qrString: latestQR,
       generatedAt: latestQRGeneratedAt,
-      // 👇 CHANGED: reuse the exact interval that was assigned when this QR was generated
-      // (60_000 or 20_000, see the `qr` handler above) rather than recomputing it here —
-      // by this point `latestQR` is already set, so re-deriving "first vs subsequent" from
-      // it would incorrectly always say "subsequent".
+      // Reuse the interval assigned when this QR was generated rather than
+      // recomputing — `latestQR` is already set by now, so re-deriving
+      // "first vs subsequent" would always incorrectly say "subsequent".
       refreshInterval: latestQRRefreshInterval,
     };
   }
@@ -379,8 +372,8 @@ export const logoutWhatsApp = async () => {
         });
         console.log("✅ Meta successfully acknowledged unpair command!");
       } catch (iqErr) {
-        // Meta instantly drops the TCP connection the millisecond they unpair the device.
-        // If this throws a "Connection Closed" error, it means it worked perfectly!
+        // Meta instantly drops the TCP connection the millisecond they unpair the
+        // device. A "Connection Closed" error here means it worked perfectly.
         console.log("✅ Unpair command sent (Connection dropped intentionally by Meta).");
       }
     }
