@@ -135,15 +135,15 @@ const transformCustomer = async (c, admin = null) => {
     }),
     c.AssignToId
       ? prisma.admin.findUnique({
-          where: { id: c.AssignToId },
-          select: { id: true, name: true, email: true, role: true, city: true },
-        })
+        where: { id: c.AssignToId },
+        select: { id: true, name: true, email: true, role: true, city: true },
+      })
       : null,
     c.CreatedBy
       ? prisma.admin.findUnique({
-          where: { id: c.CreatedBy },
-          select: { id: true, name: true, email: true },
-        })
+        where: { id: c.CreatedBy },
+        select: { id: true, name: true, email: true },
+      })
       : null,
   ]);
 
@@ -175,20 +175,20 @@ const transformCustomer = async (c, admin = null) => {
 
     AssignTo: assignToDoc
       ? {
-          _id: assignToDoc.id,
-          name: assignToDoc.name,
-          email: assignToDoc.email,
-          role: assignToDoc.role,
-          city: assignToDoc.city,
-        }
+        _id: assignToDoc.id,
+        name: assignToDoc.name,
+        email: assignToDoc.email,
+        role: assignToDoc.role,
+        city: assignToDoc.city,
+      }
       : null,
 
     CreatedBy: createdByDoc
       ? {
-          _id: createdByDoc.id,
-          name: createdByDoc.name,
-          email: createdByDoc.email,
-        }
+        _id: createdByDoc.id,
+        name: createdByDoc.name,
+        email: createdByDoc.email,
+      }
       : null,
   };
 };
@@ -348,7 +348,7 @@ export const getAllCustomers = async (req, res, next) => {
       include: { AssignTo: true },
     });
 
-    const transformed = await Promise.all(customers.map(transformGetCustomer,admin));
+    const transformed = await Promise.all(customers.map(transformGetCustomer, admin));
 
     // ---------------------------------------------------------
     // 5. SAVE TO CACHE FOR NEXT TIME
@@ -412,7 +412,7 @@ export const getTodayCustomers = async (req, res, next) => {
     // 🚀 OPTIMIZATION 3: Concurrent Transformation
     // Forces the loop to process all records simultaneously instead of waiting sequentially.
     const transformedCustomers = await Promise.all(
-      customers.map((c) => transformGetCustomer(c,admin))
+      customers.map((c) => transformGetCustomer(c, admin))
     );
 
     return res.status(200).json(transformedCustomers);
@@ -1235,48 +1235,90 @@ export const getCustomer = async (req, res, next) => {
 
 
     const where = AND.length ? { AND } : {};
-    const orderBy = sort?.toLowerCase() === "asc"
+    const isAsc = sort?.toLowerCase() === "asc";
+    const isAdminRole = ["administrator", "client_admin"].includes(admin.role);
+
+    const orderBy = isAsc
       ? [{ createdAt: "asc" }]
       : [{ updatedAt: "desc" }, { createdAt: "desc" }];
 
     // --------------------------------------------
-    // 🚀 OPTIMIZED FETCH (Concurrent Execution)
+    // 🚀 SCAN + LOGS (Concurrent Execution)
     // --------------------------------------------
-
-    // We fire BOTH the count and the page fetch at the exact same time.
-    // We let Prisma natively handle skip/take instead of manual JS slicing.
-    const [totalRecords, customers] = await Promise.all([
-      // 1. Get total records
-      ContactNumber
-        ? prisma.customer.count({ where })
-        : prisma.customer.findMany({
-          where,
-          distinct: ["ContactNumber"],
-          select: { id: true },
-        }).then(res => res.length),
-
-      // 2. Fetch the actual page data natively
+    const [base, logs] = await Promise.all([
       prisma.customer.findMany({
         where,
         orderBy,
-        skip: offset,
-        ...(Limit !== undefined && { take: REQUIRED }),
-        // Apply distinct safely
-        ...(!ContactNumber && { distinct: ["ContactNumber"] }),
-        include: {
-          // 🚀 ONLY pull the fields the UI actually renders
-          AssignTo: {
-            select: { id: true, name: true, email: true, role: true, city: true }
-          },
-          _count: { select: { shortlistedProperties: true } }
-        },
-      })
+        select: { id: true, createdAt: true, updatedAt: true, ContactNumber: true },
+      }),
+      prisma.customerAssignLog.findMany({
+        where: isAdminRole
+          ? { OR: [{ assignedById: adminId }, { adminId }] }
+          : { adminId },
+        select: { customerId: true, assignedAt: true },
+      }),
     ]);
+
+    // totalRecords — same two branches as before
+    const totalRecords = ContactNumber
+      ? base.length
+      : new Set(base.map((c) => c.ContactNumber)).size;
+
+    // per-viewer assignment recency
+    const assignedMap = new Map();
+    for (const l of logs) {
+      const prev = assignedMap.get(l.customerId);
+      if (!prev || l.assignedAt > prev) assignedMap.set(l.customerId, l.assignedAt);
+    }
+
+    // ONLY the ordering changes; asc path is left exactly as the DB returned it
+    if (!isAsc) {
+      const keyOf = (c) => {
+        const a = assignedMap.get(c.id);
+        return Math.max(
+          a ? a.getTime() : 0,
+          c.updatedAt ? c.updatedAt.getTime() : 0,
+          c.createdAt.getTime()
+        );
+      };
+      base.sort((x, y) => keyOf(y) - keyOf(x));
+    }
+
+    // window first (= old skip/take), THEN dedupe (= old in-memory distinct)
+    const start = Number.isFinite(offset) ? offset : 0;
+    const end = Limit !== undefined && Number.isFinite(REQUIRED)
+      ? start + REQUIRED
+      : undefined;
+
+    const seen = new Set();
+    const pageIds = [];
+    for (const c of base.slice(start, end)) {
+      if (!ContactNumber) {
+        if (seen.has(c.ContactNumber)) continue;
+        seen.add(c.ContactNumber);
+      }
+      pageIds.push(c.id);
+    }
+
+    const rows = pageIds.length
+      ? await prisma.customer.findMany({
+          where: { id: { in: pageIds } },
+          include: {
+            AssignTo: {
+              select: { id: true, name: true, email: true, role: true, city: true }
+            },
+            _count: { select: { shortlistedProperties: true } }
+          },
+        })
+      : [];
+
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const customers = pageIds.map((id) => byId.get(id)).filter(Boolean);
 
     // --------------------------------------------
     // FINAL TRANSFORM & RESPONSE
     // --------------------------------------------
-    const transformed = await Promise.all(customers.map(transformGetCustomer,admin));
+    const transformed = await Promise.all(customers.map(transformGetCustomer, admin));
     if (admin.role === "agent") {
       transformed.forEach((customer) => {
         if (customer.CreatedById !== (admin.id || admin._id)) {
@@ -1370,7 +1412,7 @@ export const getCustomerById = async (req, res, next) => {
     if (admin.role === "city_admin" && customer.City !== admin.city)
       return next(new ApiError(403, "Access denied"));
 
-    const response = await transformCustomer(customer,admin);
+    const response = await transformCustomer(customer, admin);
     res.status(200).json(response);
   } catch (error) {
     next(new ApiError(500, error.message));
@@ -1567,7 +1609,7 @@ export const createCustomer = async (req, res, next) => {
 
     res
       .status(201)
-      .json({ success: true, data: await transformCustomer(newCustomer,admin) });
+      .json({ success: true, data: await transformCustomer(newCustomer, admin) });
   } catch (error) {
     next(new ApiError(500, error.message));
   }
@@ -1853,7 +1895,7 @@ export const updateCustomer = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: "Customer updated successfully",
-      data: await transformGetCustomer(updated,admin),
+      data: await transformGetCustomer(updated, admin),
     });
   } catch (error) {
     next(new ApiError(500, error.message));
@@ -2038,6 +2080,37 @@ export const assignCustomer = async (req, res, next) => {
 
     await Promise.all(updates);
 
+    // ---- assignment recency log ----
+    try {
+      const logIds = customers.map((c) => c.id);
+
+      if (action === "remove") {
+        await prisma.customerAssignLog.deleteMany({
+          where: { customerId: { in: logIds }, adminId: { in: assignToId } },
+        });
+      } else {
+        const now = new Date();
+        await prisma.$transaction([
+          prisma.customerAssignLog.deleteMany({
+            where: { customerId: { in: logIds }, adminId: { in: assignToId } },
+          }),
+          prisma.customerAssignLog.createMany({
+            data: logIds.flatMap((customerId) =>
+              assignToId.map((adminId) => ({
+                customerId,
+                adminId,
+                assignedById: admin.id || admin._id,
+                assignedAt: now,
+              }))
+            ),
+            skipDuplicates: true,
+          }),
+        ]);
+      }
+    } catch (e) {
+      console.error("assign log failed (non-fatal):", e.message);
+    }
+
     const updated = await prisma.customer.findMany({
       where: whereCondition,
       include: { AssignTo: true },
@@ -2049,7 +2122,7 @@ export const assignCustomer = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: `${actionLabel} ${updated.length} customers successfully`,
-      data: await Promise.all(updated.map(transformGetCustomer,admin)),
+      data: await Promise.all(updated.map(transformGetCustomer, admin)),
     });
   } catch (error) {
     next(new ApiError(500, error.message));
@@ -2108,7 +2181,7 @@ export const getFavouriteCustomers = async (req, res, next) => {
       where,
       orderBy: { createdAt: "desc" },
     });
-    const transformed = await Promise.all(favs.map(transformGetCustomer,admin));
+    const transformed = await Promise.all(favs.map(transformGetCustomer, admin));
     res
       .status(200)
       .json({ success: true, count: transformed.length, data: transformed });
@@ -2390,7 +2463,7 @@ export const getRecommendedCustomer = async (req, res, next) => {
     }
 
     const where = AND.length ? { AND } : {};
-    
+
 
     // --------------------------------------------
     // 🔥 FETCH ALL RELEVANT CUSTOMERS
@@ -2504,7 +2577,7 @@ export const getRecommendedCustomer = async (req, res, next) => {
       // the wrong locality — family outranks geography.
       const familyRank =
         baseFamily === "other" || custFamily === "other" ? 1 :
-        custFamily === baseFamily ? 2 : 0;
+          custFamily === baseFamily ? 2 : 0;
 
       // ── SOFT SCORE: tokens live here, and only here ──
       let score = 0;
@@ -2545,7 +2618,7 @@ export const getRecommendedCustomer = async (req, res, next) => {
     // --------------------------------------------
 
     const transformed = await Promise.all(
-      customers.map(transformGetCustomer,admin)
+      customers.map(transformGetCustomer, admin)
     );
 
     res.status(200).json({
@@ -2553,7 +2626,7 @@ export const getRecommendedCustomer = async (req, res, next) => {
       count: transformed.length,
       data: transformed,
       aiAnswer: answer,
-     appliedFilters: {
+      appliedFilters: {
         tokens: safeTokens,
         nearbyLocations: safeNearbyLocations,
         baseFamily,
@@ -3264,7 +3337,7 @@ export const getClosedDeals = async (req, res, next) => {
     }
 
     // ── Transform ──────────────────────────────────────────────────────────
-    const transformed = await Promise.all(customers.map(transformGetCustomer,admin));
+    const transformed = await Promise.all(customers.map(transformGetCustomer, admin));
 
     return res.status(200).json({
       success: true,
@@ -3468,7 +3541,7 @@ export const getCustomerShortlist = async (req, res, next) => {
     // 3. TRANSFORM DATA
     const transformedProperties = await Promise.all(
       shortlists.map(async (item) => {
-        const transformedProperty = await transformGetCustomer(item.property,admin);
+        const transformedProperty = await transformGetCustomer(item.property, admin);
         return {
           ...transformedProperty,
           _shortlistInfo: {
