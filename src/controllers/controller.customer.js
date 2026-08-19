@@ -1259,19 +1259,33 @@ export const getCustomer = async (req, res, next) => {
       }),
     ]);
 
-    // totalRecords — same two branches as before
-    const totalRecords = ContactNumber
-      ? base.length
-      : new Set(base.map((c) => c.ContactNumber)).size;
+    // --------------------------------------------
+    // DEDUPE FIRST (same as old distinct → full pages)
+    // --------------------------------------------
+    let ordered = base;
 
-    // per-viewer assignment recency
+    if (!ContactNumber) {
+      const seen = new Set();
+      ordered = [];
+      for (const c of base) {
+        if (seen.has(c.ContactNumber)) continue;
+        seen.add(c.ContactNumber);
+        ordered.push(c);
+      }
+    }
+
+    const totalRecords = ordered.length;
+
+    // --------------------------------------------
+    // PER-VIEWER ASSIGNMENT RECENCY
+    // --------------------------------------------
     const assignedMap = new Map();
     for (const l of logs) {
       const prev = assignedMap.get(l.customerId);
       if (!prev || l.assignedAt > prev) assignedMap.set(l.customerId, l.assignedAt);
     }
 
-    // ONLY the ordering changes; asc path is left exactly as the DB returned it
+    // ONLY the ordering changes; asc path left exactly as the DB returned it
     if (!isAsc) {
       const keyOf = (c) => {
         const a = assignedMap.get(c.id);
@@ -1281,24 +1295,18 @@ export const getCustomer = async (req, res, next) => {
           c.createdAt.getTime()
         );
       };
-      base.sort((x, y) => keyOf(y) - keyOf(x));
+      ordered.sort((x, y) => keyOf(y) - keyOf(x));
     }
 
-    // window first (= old skip/take), THEN dedupe (= old in-memory distinct)
+    // --------------------------------------------
+    // PAGE (full pages, same skip/take semantics)
+    // --------------------------------------------
     const start = Number.isFinite(offset) ? offset : 0;
     const end = Limit !== undefined && Number.isFinite(REQUIRED)
       ? start + REQUIRED
       : undefined;
 
-    const seen = new Set();
-    const pageIds = [];
-    for (const c of base.slice(start, end)) {
-      if (!ContactNumber) {
-        if (seen.has(c.ContactNumber)) continue;
-        seen.add(c.ContactNumber);
-      }
-      pageIds.push(c.id);
-    }
+    const pageIds = ordered.slice(start, end).map((c) => c.id);
 
     const rows = pageIds.length
       ? await prisma.customer.findMany({
@@ -1312,6 +1320,7 @@ export const getCustomer = async (req, res, next) => {
         })
       : [];
 
+    // findMany({ id: { in } }) returns DB order — restore our order
     const byId = new Map(rows.map((r) => [r.id, r]));
     const customers = pageIds.map((id) => byId.get(id)).filter(Boolean);
 
