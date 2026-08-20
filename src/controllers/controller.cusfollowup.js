@@ -7,6 +7,7 @@ import { getCustomerAccessFilter } from "./controller.customer.js";
 import { replacePlaceholders } from "./controller.messages.js";
 import { sendBaileysWhatsApp } from "../config/twilio.js";
 import { sendEmail } from "../config/mailer.js";
+import { logActivity } from "../utils/activityLogger.js";
 
 const prisma = new PrismaClient();
 
@@ -326,6 +327,17 @@ export const createFollowup = async (req, res, next) => {
       include: { customer: true },
     });
 
+    logActivity({
+      req, admin,
+      action: "create",
+      entity: "followup",
+      entityId: followup.id,
+      entityName: followup.customer?.customerName,
+      customerId: followup.customerId,
+      followupId: followup.id,
+      meta: { StatusType: followup.StatusType, FollowupNextDate: followup.FollowupNextDate },
+    });
+
 
 
     // if next date is today, notify immediately
@@ -592,6 +604,17 @@ export const updateFollowup = async (req, res, next) => {
       include: { customer: { include: { AssignTo: true } } },
     });
 
+    logActivity({
+      req, admin: req.admin,
+      action: "update",
+      entity: "followup",
+      entityId: updatedFollowup.id,
+      entityName: updatedFollowup.customer?.customerName,
+      customerId: updatedFollowup.customerId,
+      followupId: updatedFollowup.id,
+      meta: { StatusType: updatedFollowup.StatusType },
+    });
+
     res.status(200).json({
       success: true,
       message: "Follow-up updated successfully",
@@ -609,7 +632,24 @@ export const updateFollowup = async (req, res, next) => {
 // ---------------------------------------------------
 export const deleteFollowup = async (req, res, next) => {
   try {
+
+    const existing = await prisma.followup.findUnique({
+      where: { id: req.params.id },
+      include: { customer: { select: { id: true, customerName: true } } },
+    });
     await prisma.followup.delete({ where: { id: req.params.id } });
+
+
+
+    logActivity({
+      req, admin: req.admin,
+      action: "delete",
+      entity: "followup",
+      entityId: req.params.id,
+      entityName: existing?.customer?.customerName,
+      customerId: existing?.customerId,
+      followupId: req.params.id,
+    });
     res
       .status(200)
       .json({ success: true, message: "Follow-up deleted successfully" });

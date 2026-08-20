@@ -1,5 +1,6 @@
 // socket/socket.js
 import { ALLOWED_ORIGINS } from "../config/cors-origins.js";
+import { registerPresence, startPresenceHeartbeat, closeStaleSessions } from "./presence.js";
 // 👇 Import the WhatsApp controllers
 import { initWhatsApp, stopWhatsAppIdle, getWhatsAppConnectionState } from "../config/baileys.js";
 
@@ -18,11 +19,17 @@ export const initSocket = async (server) => {
     pingTimeout: 20000,
   });
 
+    // 2. add these two lines right after io is created
+  await closeStaleSessions();   // clean sessions left open by a restart
+  startPresenceHeartbeat();
+
   io.on("connection", (socket) => {
     const adminId = socket.handshake.auth?.adminId;
     if (adminId) {
       socket.join(`admin:${adminId}`);
     }
+
+     registerPresence(io, socket);
 
     // ─── WHATSAPP VIEWER TRACKING ──────────────────────────────────────
 

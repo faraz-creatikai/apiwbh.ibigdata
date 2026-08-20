@@ -73,6 +73,7 @@ const prisma = new PrismaClient();
         clientId: true,
         AddressLine1: true,
         AddressLine2: true,
+        isSuperAdmin: true,
         createdAt: true,
         updatedAt: true,
       },

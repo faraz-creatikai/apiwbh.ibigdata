@@ -10,6 +10,7 @@ import timezone from "dayjs/plugin/timezone.js";
 import { CallingAgent, DataMiningAgent, QualifyAgent } from "../ai/agent.js";
 import { callingAgentPrompt } from "../ai/prompts/callingAgentPrompt.js";
 import { notifyCustomerCreated } from "../jobs/notification/notificationEvents.js";
+import { diffFields, logActivity } from "../utils/activityLogger.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -1310,14 +1311,14 @@ export const getCustomer = async (req, res, next) => {
 
     const rows = pageIds.length
       ? await prisma.customer.findMany({
-          where: { id: { in: pageIds } },
-          include: {
-            AssignTo: {
-              select: { id: true, name: true, email: true, role: true, city: true }
-            },
-            _count: { select: { shortlistedProperties: true } }
+        where: { id: { in: pageIds } },
+        include: {
+          AssignTo: {
+            select: { id: true, name: true, email: true, role: true, city: true }
           },
-        })
+          _count: { select: { shortlistedProperties: true } }
+        },
+      })
       : [];
 
     // findMany({ id: { in } }) returns DB order — restore our order
@@ -1594,6 +1595,16 @@ export const createCustomer = async (req, res, next) => {
             : undefined,
         CreatedById: admin._id || admin.id,
       },
+    });
+
+    logActivity({
+      req, admin,
+      action: "create",
+      entity: "customer",
+      entityId: newCustomer.id,
+      entityName: newCustomer.customerName,
+      customerId: newCustomer.id,
+      meta: { campaign: newCustomer.Campaign, city: newCustomer.City },
     });
 
     /* web hook trigger n8n  */
@@ -1901,6 +1912,16 @@ export const updateCustomer = async (req, res, next) => {
       include: { AssignTo: true, _count: { select: { shortlistedProperties: true } } },
     });
 
+    logActivity({
+      req, admin,
+      action: "update",
+      entity: "customer",
+      entityId: updated.id,
+      entityName: updated.customerName,
+      customerId: updated.id,
+      meta: { changed: diffFields(existing, updated) },
+    });
+
     res.status(200).json({
       success: true,
       message: "Customer updated successfully",
@@ -1957,6 +1978,16 @@ export const deleteCustomer = async (req, res, next) => {
     await Promise.allSettled(deletions);
 
     await prisma.customer.delete({ where: { id } });
+
+    logActivity({
+      req, admin,
+      action: "delete",
+      entity: "customer",
+      entityId: id,
+      entityName: existing.customerName,
+      customerId: id,
+      meta: { contact: existing.ContactNumber, city: existing.City },
+    });
 
     res.status(200).json({ message: "Customer deleted successfully" });
   } catch (error) {
@@ -2116,6 +2147,21 @@ export const assignCustomer = async (req, res, next) => {
           }),
         ]);
       }
+
+      await Promise.all(
+        customers.map((c) =>
+          logActivity({
+            req, admin,
+            action: action === "remove" ? "unassign" : "assign",
+            entity: "customer",
+            entityId: c.id,
+            entityName: c.customerName,
+            customerId: c.id,
+            targetAdminId: assignToId[0],
+            meta: { targetAdminIds: assignToId, campaign: campaign || null },
+          })
+        )
+      );
     } catch (e) {
       console.error("assign log failed (non-fatal):", e.message);
     }

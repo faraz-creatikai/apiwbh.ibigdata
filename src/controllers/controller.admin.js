@@ -330,6 +330,9 @@ export const updateAdminDetails = async (req, res) => {
 
     // SAME PERMISSION LOGIC AS MONGO
     if (currentAdmin.role === "administrator") {
+      if (targetAdmin.role === "administrator" && targetAdmin.id !== currentAdmin.id && !currentAdmin.isSuperAdmin) {
+        throw new ApiError(403, "You cannot update another administrator's details");
+      }
     } else if (currentAdmin.role === "city_admin") {
       if (
         targetAdmin.role !== "user" ||
@@ -471,6 +474,10 @@ export const updateAdminDetails = async (req, res) => {
 
       // administrator can change any role
       if (currentAdmin.role === "administrator") {
+        // Prevent Super Admin (Owner) from changing their own role
+        if (currentAdmin.isSuperAdmin && targetAdmin.id === currentAdmin.id && req.body.role !== targetAdmin.role) {
+          throw new ApiError(403, "Owner cannot change their own role");
+        }
         updates.role = req.body.role;
       }
 
@@ -829,6 +836,9 @@ export const deleteAdmin = async (req, res) => {
     if (!targetAdmin) throw new ApiError(404, "Admin not found");
 
     if (targetAdmin.role === "administrator") {
+      if (targetAdmin.isSuperAdmin) {
+        throw new ApiError(403, "Cannot delete the owner account");
+      }
       const count = await prisma.admin.count({
         where: { role: "administrator" },
       });
