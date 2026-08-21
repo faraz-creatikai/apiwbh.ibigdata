@@ -426,12 +426,11 @@ export async function SocialContentAgent(payload) {
 // payload the prompt sees as DATA.templateHtml. See emailCampaignPrompt.js
 // for the matching instruction that tells the model how to use it.
 
-export async function EmailCampaignAgent(userPrompt, customerContext = {}, mode = "hindi", usingTemplate = false) {
+export async function EmailCampaignAgent(userPrompt, customerContext = {}, mode = "hindi") {
   const payload = {
     userPrompt,
     mode,
     ...(customerContext.customer && { customer: customerContext.customer }),
-    usingTemplate: !!usingTemplate, // just a flag — no HTML sent
   };
 
   const { client, model, provider } = await getDynamicAIContext("GEMINI", "models/gemini-2.5-flash");
