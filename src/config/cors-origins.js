@@ -15,4 +15,4 @@ export const ALLOWED_ORIGINS = [
   "https://estateai.in",
 ];
 
-export const clientUrl = "https://propertybulk.ibigdata.in";
+export const clientUrl = "https://consult.ibigdata.in";
