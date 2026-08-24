@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import prisma from "../config/prismaClient.js"; // your Prisma client instance
 import ApiError from "../utils/ApiError.js";
+import { logActivity } from "../utils/activityLogger.js";
 
 // ----------------------------------------------------
 const __filename = fileURLToPath(import.meta.url);
@@ -683,6 +684,22 @@ export const importCustomers = async (req, res, next) => {
         });
 
         imported.push({ ...row, id: created.id });
+
+        //ACTIVITY LOG TRIGGER
+        logActivity({
+          req, 
+          admin,
+          action: "import", // Uses the new enum value
+          entity: "customer",
+          entityId: created.id,
+          entityName: created.customerName,
+          customerId: created.id,
+          meta: { 
+            method: "excel_bulk_import", 
+            campaign: created.Campaign, 
+            city: created.City 
+          },
+        });
 
         /*  if (row.Email) existingEmails.add(row.Email); */
         if (row.ContactNumber) existingPhones.add(row.ContactNumber);

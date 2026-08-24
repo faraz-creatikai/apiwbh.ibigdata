@@ -1,6 +1,3 @@
-
-
-
 export const getAccessToken = async () => {
   const res = await fetch("https://openapi.airtel.in/oauth/token", {
     method: "POST",
