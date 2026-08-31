@@ -37,7 +37,7 @@ export const getTask = async (req, res, next) => {
     res.status(200).json(tasks.map(transformTask));
   } catch (error) {
     next(new ApiError(500, error.message));
-  }
+  }u
 };
 
 // ------------------------------------------------------------------

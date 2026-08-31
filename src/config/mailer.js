@@ -4,28 +4,22 @@ import { ImapFlow } from "imapflow";
 import dotenv from "dotenv";
 dotenv.config();
 
-// 1️⃣ Create main transporter for general emails (using Hostinger SMTP)
+// 1️⃣ Create ONE pooled transporter for all emails (Saves memory & prevents blocking)
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: process.env.SMTP_PORT || 587,
   secure: true, // use true for 465
+  pool: true,         // 👈 ENABLES POOLING
+  maxConnections: 3,  // 👈 MAX 3 CONNECTIONS AT ONCE
+  maxMessages: 100,   // 👈 REUSE CONNECTION 100 TIMES
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
 });
 
-// 2️⃣ Create SMTP transporter (for system-generated mails)
-const smtpTransporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: process.env.SMTP_PORT || 587,
-  secure: true,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
+// Helper function to pause execution
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const saveToSentFolder = async (rawEmail) => {
   const client = new ImapFlow({
@@ -36,28 +30,21 @@ const saveToSentFolder = async (rawEmail) => {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
-    // Optional: Set to false to hide those verbose IMAP logs in your terminal
     logger: false,
   });
 
   try {
     await client.connect();
-
-    // Append the raw email to Hostinger's Sent folder
-    // The ['\\Seen'] flag marks it as read so it doesn't show as unread in Sent
     await client.append("INBOX.Sent", rawEmail, ["\\Seen"]);
-
     console.log("✅ Email successfully saved to INBOX.Sent");
   } catch (error) {
     console.error("❌ Failed to save email to Sent folder:", error);
   } finally {
-    // Always ensure you log out to prevent hanging connections
     await client.logout();
   }
 };
 
-
-// 3️⃣ Generic sendEmail function (uses Hostinger SMTP)
+// 3️⃣ Generic sendEmail function 
 export const sendEmail = async (to, subject, html) => {
   try {
     const mailOptions = {
@@ -67,10 +54,8 @@ export const sendEmail = async (to, subject, html) => {
       html,
     };
 
-    // Generate raw RFC822 email
     const rawEmail = await new MailComposer(mailOptions).compile().build();
 
-    // Send email
     const info = await transporter.sendMail({
       envelope: {
         from: process.env.SMTP_USER,
@@ -81,7 +66,6 @@ export const sendEmail = async (to, subject, html) => {
 
     console.log("✅ Email sent:", info.response);
 
-    // Save to Hostinger Sent folder
     await saveToSentFolder(rawEmail);
 
     return info;
@@ -91,7 +75,7 @@ export const sendEmail = async (to, subject, html) => {
   }
 };
 
-// 4️⃣ System-generated mail function (unchanged)
+// 4️⃣ System-generated mail function
 export const sendSystemEmail = async (to, userName, password, role) => {
   try {
     let subject = "Your Account Has Been Created";
@@ -133,7 +117,6 @@ export const sendSystemEmail = async (to, userName, password, role) => {
       </div>
     `;
 
-
     const mailOptions = {
       from: `"System Notification" <${process.env.SMTP_USER}>`,
       to,
@@ -141,12 +124,32 @@ export const sendSystemEmail = async (to, userName, password, role) => {
       html,
     };
 
-
-    const info = await smtpTransporter.sendMail(mailOptions);
+    // 👈 Now uses the pooled 'transporter' instead of the redundant 'smtpTransporter'
+    const info = await transporter.sendMail(mailOptions);
     console.log("✅ System email sent:", info.response);
     return info;
   } catch (error) {
     console.error("❌ System email error:", error.message);
     throw error;
   }
+};
+
+// 5️⃣ NEW: Bulk Campaign Function (Use this for sending your 500 emails)
+export const sendBulkCampaign = async (usersArray, subject, htmlContent) => {
+  console.log(`🚀 Starting bulk send to ${usersArray.length} users...`);
+
+  for (const user of usersArray) {
+    try {
+      await sendEmail(user.email, subject, htmlContent);
+      
+      // 👈 THE MAGIC TRICK: Wait 3 seconds before sending the next one
+      // This protects your Hostinger IMAP connection and keeps you unblocked.
+      await delay(3000); 
+
+    } catch (error) {
+      console.error(`❌ Failed to send to ${user.email}`);
+    }
+  }
+
+  console.log("✅ Bulk campaign finished!");
 };

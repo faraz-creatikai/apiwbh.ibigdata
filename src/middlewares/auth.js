@@ -6,7 +6,7 @@ const prisma = new PrismaClient();
 
 
 
- export const protectRoute = async (req, res, next) => {
+export const protectRoute = async (req, res, next) => {
   try {
     // 1. Look for headers
     const apiKey = req.headers["x-api-key"];
@@ -52,7 +52,7 @@ const prisma = new PrismaClient();
 
       // Attach admin to request and proceed
       req.admin = apiKeyRecord.admin;
-      return next(); 
+      return next();
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ const prisma = new PrismaClient();
     }
     return res.status(500).json({ success: false, message: error.message });
   }
-}; 
+};
 
 // ------------------- PROTECT ROUTE -------------------
 // ------------------- PROTECT ROUTE -------------------
@@ -193,7 +193,7 @@ export const isAdministrator = (req, res, next) => {
 // Check if user is city admin or administrator
 export const isCityAdminOrAbove = (req, res, next) => {
   try {
-    if (req.admin.role !== "administrator" &&  req.admin.role !== "client_admin" && req.admin.role !== "city_admin") {
+    if (req.admin.role !== "administrator" && req.admin.role !== "client_admin" && req.admin.role !== "city_admin") {
       throw new ApiError(
         403,
         "Access denied. City Admin or Administrator privileges required"

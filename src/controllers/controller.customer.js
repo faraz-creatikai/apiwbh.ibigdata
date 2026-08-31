@@ -3716,41 +3716,82 @@ export const updateShortlistStatus = async (req, res, next) => {
 
 // archieve customer
 
-// ─── Archive a Customer (individual, hides only for this admin) ──────────────
+// ─── Archive Customers (single or multiple) ──────────────
 export const archiveCustomer = async (req, res, next) => {
   try {
     const admin = req.admin;
-    const { id } = req.params;
     const adminId = admin.id || admin._id;
+    
+    // Accept from body, fallback to params for backward compatibility
+    let customerIds = req.body.customerIds || (req.params.id ? [req.params.id] : []);
 
-    const customer = await prisma.customer.findUnique({ where: { id } });
-    if (!customer) return res.status(404).json({ success: false, message: "Customer not found" });
+    // Normalize string to array
+    if (typeof customerIds === "string") {
+      try {
+        customerIds = JSON.parse(customerIds);
+      } catch {
+        customerIds = [];
+      }
+    }
+    
+    if (!Array.isArray(customerIds) || customerIds.length === 0) {
+      return res.status(400).json({ success: false, message: "No customer IDs provided" });
+    }
 
-    // upsert so a double-click / re-fire doesn't throw a unique constraint error
-    const archived = await prisma.customerArchive.upsert({
-      where: { customerId_adminId: { customerId: id, adminId } },
-      update: {},
-      create: { customerId: id, adminId },
+    // Prepare data payload for bulk insert
+    const archiveData = customerIds.map((id) => ({
+      customerId: id,
+      adminId: adminId,
+    }));
+
+    // createMany with skipDuplicates prevents unique constraint errors on double-clicks
+    const archived = await prisma.customerArchive.createMany({
+      data: archiveData,
+      skipDuplicates: true, 
     });
 
-    return res.status(200).json({ success: true, data: archived });
+    return res.status(200).json({ 
+      success: true, 
+      count: archived.count,
+      message: `${archived.count} customer(s) archived` 
+    });
   } catch (error) {
     next(new ApiError(500, error.message));
   }
 };
 
-// ─── Unarchive a Customer (undo, only removes the caller's own record) ───────
+// ─── Unarchive Customers (single or multiple) ───────
 export const unarchiveCustomer = async (req, res, next) => {
   try {
     const admin = req.admin;
-    const { id } = req.params;
     const adminId = admin.id || admin._id;
+    
+    let customerIds = req.body.customerIds || (req.params.id ? [req.params.id] : []);
 
-    await prisma.customerArchive.deleteMany({
-      where: { customerId: id, adminId },
+    if (typeof customerIds === "string") {
+      try {
+        customerIds = JSON.parse(customerIds);
+      } catch {
+        customerIds = [];
+      }
+    }
+
+    if (!Array.isArray(customerIds) || customerIds.length === 0) {
+      return res.status(400).json({ success: false, message: "No customer IDs provided" });
+    }
+
+    const unarchived = await prisma.customerArchive.deleteMany({
+      where: { 
+        customerId: { in: customerIds }, 
+        adminId 
+      },
     });
 
-    return res.status(200).json({ success: true, message: "Customer unarchived" });
+    return res.status(200).json({ 
+      success: true, 
+      count: unarchived.count,
+      message: `${unarchived.count} customer(s) unarchived` 
+    });
   } catch (error) {
     next(new ApiError(500, error.message));
   }
