@@ -567,18 +567,46 @@ const extractInteractions = (rawData) => {
     return Object.values(rawData || {}).find(Array.isArray) || [];
 };
 
-const MAX_ROUNDS = 30; // safety stop: at most 30 requests per sync
+/*
+ * REPLACE in your controller file:
+ *   - MAX_ROUNDS + fetchAllInteractions
+ *   - syncSarvamCallLogs
+ * with everything below. (last10, logTime, extractInteractions stay as they are.)
+ * `prisma` is already imported at the top of your file.
+ */
 
-// Gets EVERY interaction between start and end, even though Sarvam caps one response.
+// ---- where the customer id / phone can live inside a Sarvam interaction ----
+const getLogCustomerId = (log) => {
+    const raw =
+        log?.agent_variables?.customer_id ||
+        log?.metadata?.customer_id ||
+        log?.webhook_config?.metadata?.customer_id ||
+        log?.app_config?.agent_variables?.customer_id;
+    return raw ? String(raw) : "";
+};
+
+const getLogPhone = (log) =>
+    log?.user_contact ||
+    log?.user_phone_number ||
+    log?.user_config?.user_phone_number ||
+    log?.phone_number ||
+    log?.called_to ||
+    "";
+
+/*
+ * Gets EVERY interaction between start and end. No round limit and no early
+ * exit on a "short" page. It stops only when a request returns nothing new,
+ * which always happens because every round must add at least one unseen call.
+ */
 const fetchAllInteractions = async (baseUrl, apiKey, start, end) => {
-    const seen = new Map(); // interaction_id -> log (dedupes overlaps)
+    const seen = new Map(); // interaction_id -> log (dedupes the overlap)
     let from = start.getTime();
     let to = end.getTime();
     let direction = null; // "asc" (oldest first) or "desc", detected from the first response
-    let firstPageSize = 0;
     let rounds = 0;
 
-    for (; rounds < MAX_ROUNDS; rounds++) {
+    while (true) {
+        rounds++;
         const params = new URLSearchParams({
             start_datetime: new Date(from).toISOString(),
             end_datetime: new Date(to).toISOString(),
@@ -600,20 +628,14 @@ const fetchAllInteractions = async (baseUrl, apiKey, start, end) => {
         if (!page.length) break;
 
         const fresh = page.filter((l) => l.interaction_id && !seen.has(l.interaction_id));
-        fresh.forEach((l) => seen.set(l.interaction_id, l));
         if (!fresh.length) break; // nothing new: we have everything
-
-        if (rounds === 0) firstPageSize = page.length;
-        // A response smaller than the first (full) one means we reached the end
-        if (rounds > 0 && page.length < firstPageSize) break;
+        fresh.forEach((l) => seen.set(l.interaction_id, l));
 
         const times = page.map(logTime).filter(Number.isFinite);
         if (!times.length) break;
 
         if (!direction) {
-            const a = logTime(page[0]);
-            const b = logTime(page[page.length - 1]);
-            direction = a <= b ? "asc" : "desc";
+            direction = logTime(page[0]) <= logTime(page[page.length - 1]) ? "asc" : "desc";
         }
 
         // Move the window past what we already have (1s overlap, duplicates are ignored)
@@ -621,7 +643,7 @@ const fetchAllInteractions = async (baseUrl, apiKey, start, end) => {
         else to = Math.min(...times) + 1000;
     }
 
-    return { logs: [...seen.values()], rounds: rounds + 1, direction };
+    return { logs: [...seen.values()], rounds, direction };
 };
 
 export const syncSarvamCallLogs = async (req, res) => {
@@ -661,42 +683,31 @@ export const syncSarvamCallLogs = async (req, res) => {
         let interactions = all.logs;
         const totalFromSarvam = interactions.length;
 
-        // ---- ONLY THIS CUSTOMER'S CALLS (before any transcript is fetched) ----
-        // 1. customer_id match wins.
-        // 2. Phone match is used only for logs that carry no customer_id
-        //    (two customers can share one phone number, e.g. Amit and "test").
-       // ---- ONLY THIS CUSTOMER'S CALLS (before any transcript is fetched) ----
+        // ---- ALL CALLS OF THIS CUSTOMER (before any transcript is fetched) ----
+        // A call belongs to the customer when:
+        //   1. its customer_id equals the selected customer, OR
+        //   2. its phone equals the customer's phone AND the call has no
+        //      customer_id, or carries a customer_id that no longer exists
+        //      in our DB. (Calls tagged with ANOTHER existing customer stay
+        //      with that customer; Amit and "test" share one phone number.)
         if (customerId || targetPhone) {
+            const logCustIds = [...new Set(interactions.map(getLogCustomerId).filter(Boolean))];
+            const existing = logCustIds.length
+                ? await prisma.customer.findMany({
+                      where: { id: { in: logCustIds } },
+                      select: { id: true },
+                  })
+                : [];
+            const knownIds = new Set(existing.map((c) => c.id));
+
             interactions = interactions.filter((log) => {
-                
-                // 1. Hunt down the customer_id in all known Sarvam payload locations
-                const rawCustId = 
-                    log.metadata?.customer_id || 
-                    log.webhook_config?.metadata?.customer_id || 
-                    log.agent_variables?.customer_id || 
-                    log.app_config?.agent_variables?.customer_id;
+                const logCustId = getLogCustomerId(log);
 
-                const logCustId = rawCustId ? String(rawCustId) : "";
+                if (customerId && logCustId === customerId) return true;
 
-                // Match by Customer ID
-                if (customerId && logCustId === customerId) {
-                    return true;
+                if (targetPhone && (!logCustId || !knownIds.has(logCustId))) {
+                    return last10(getLogPhone(log)) === targetPhone;
                 }
-
-                // 2. If no customer ID was found in the payload, fallback to Phone matching
-                if (!logCustId && targetPhone) {
-                    // Hunt down the phone number in all known Sarvam payload locations
-                    const rawPhone = 
-                        log.user_phone_number || 
-                        log.user_contact || 
-                        log.user_config?.user_phone_number || 
-                        log.phone_number || 
-                        log.called_to || 
-                        "";
-                        
-                    return last10(rawPhone) === targetPhone;
-                }
-                
                 return false;
             });
         }
@@ -727,21 +738,31 @@ export const syncSarvamCallLogs = async (req, res) => {
             };
         });
 
-        // Debug aid
+        // ---- Sarvam vs our calculation: settles "whose fault is it" ----
+        // dbCalls = calls OUR server started for this customer (saved at trigger time).
+        // If dbCalls is bigger than matched, calls are missing from Sarvam's list
+        // (or the filter drops them). newestFromSarvam shows how recent Sarvam's list reaches.
         const times = all.logs.map(logTime).filter(Number.isFinite);
-        console.log(
-            `[sync] customer=${customerId || "-"} phone=${targetPhone || "-"} | ` +
-            `${totalFromSarvam} from Sarvam in ${all.rounds} request(s), order=${all.direction || "?"}, ` +
-            `newest=${times.length ? new Date(Math.max(...times)).toISOString() : "-"} | ` +
-            `${finalLogs.length} matched, ` +
-            `${finalLogs.filter((l) => l.has_recording).length} with recording, ` +
-            `${finalLogs.filter((l) => l.transcript.length > 0).length} with transcript.`
-        );
+        const dbCalls = customerId
+            ? await prisma.sarvamCallLog.count({ where: { customerId } }).catch(() => null)
+            : null;
+        const meta = {
+            fromSarvam: totalFromSarvam,
+            sarvamRequests: all.rounds,
+            order: all.direction,
+            newestFromSarvam: times.length ? new Date(Math.max(...times)).toISOString() : null,
+            oldestFromSarvam: times.length ? new Date(Math.min(...times)).toISOString() : null,
+            matched: finalLogs.length,
+            dbCalls,
+            nowUtc: new Date().toISOString(),
+        };
+        console.log(`[sync] customer=${customerId || "-"} phone=${targetPhone || "-"}`, JSON.stringify(meta));
 
         return res.status(200).json({
             success: true,
             count: finalLogs.length,
             logs: finalLogs,
+            meta,
         });
     } catch (error) {
         console.error("Sarvam call log sync failed:", error);
