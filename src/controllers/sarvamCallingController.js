@@ -541,6 +541,27 @@ const mapWithConcurrency = async (items, limit, fn) => {
  * which the frontend passes to fetchSarvamAudio() on demand.
  * =====================================================================
  */
+/*
+ * =====================================================================
+ * GET /sarvam/call-logs?customerId=...&phone=...
+ *
+ * Same route, same controller. The only change: when the frontend passes
+ * customerId and/or phone, we keep only that customer's interactions
+ * BEFORE fetching transcripts, so a request only does work for one
+ * customer. With no query params it behaves exactly as before.
+ *
+ * recording_url is the RAW Sarvam media URL, which the frontend passes to
+ * fetchSarvamAudio() on demand.
+ *
+ * Helpers used below are the ones already in your file, unchanged:
+ * getApiKey, mapWithConcurrency, fetchInteractionTranscript,
+ * toAbsoluteMediaUrl
+ * =====================================================================
+ */
+
+// Last 10 digits, so "+91 78781 72452" and "7878172452" compare equal
+const last10 = (v) => String(v ?? "").replace(/\D/g, "").slice(-10);
+
 export const syncSarvamCallLogs = async (req, res) => {
     try {
         const apiKey = getApiKey();
@@ -554,6 +575,10 @@ export const syncSarvamCallLogs = async (req, res) => {
             });
         }
 
+        // Which customer is the frontend asking about? (both optional)
+        const customerId = req.query.customerId ? String(req.query.customerId) : "";
+        const targetPhone = last10(req.query.phone);
+
         const baseUrl = `https://apps.sarvam.ai/api/analytics/v1/${orgId}/${workspaceId}/${appId}`;
 
         // Last 30 days
@@ -564,6 +589,9 @@ export const syncSarvamCallLogs = async (req, res) => {
         const params = new URLSearchParams({
             start_datetime: start.toISOString(),
             end_datetime: end.toISOString(),
+            // OPTIONAL, UNCONFIRMED: if Sarvam supports a page-size param you can
+            // try it here to get more than the default 20 per response, e.g.
+            // limit: "500",
         });
 
         const interactionsResponse = await fetch(`${baseUrl}/interactions?${params.toString()}`, {
@@ -597,6 +625,24 @@ export const syncSarvamCallLogs = async (req, res) => {
             interactions = Object.values(rawData).find(Array.isArray) || [];
         }
 
+        const totalFromSarvam = interactions.length;
+
+        // ---- ONLY THIS CUSTOMER'S CALLS (before any transcript is fetched) ----
+        // 1. customer_id match wins.
+        // 2. Phone match is used only for logs that carry no customer_id
+        //    (two customers can share one phone number, e.g. Amit and "test").
+        if (customerId || targetPhone) {
+            interactions = interactions.filter((log) => {
+                const logCustId = log.agent_variables?.customer_id
+                    ? String(log.agent_variables.customer_id)
+                    : "";
+
+                if (customerId && logCustId === customerId) return true;
+                if (!logCustId && targetPhone) return last10(log.user_contact) === targetPhone;
+                return false;
+            });
+        }
+
         const finalLogs = await mapWithConcurrency(interactions, 5, async (log) => {
             // Use an inline transcript if the list ever includes one
             let transcriptArray = [];
@@ -623,14 +669,14 @@ export const syncSarvamCallLogs = async (req, res) => {
             };
         });
 
-        // Debug aid: confirms what the frontend will receive
-        const withAudio = finalLogs.filter((l) => l.has_recording);
+        // Debug aid. If "from Sarvam" is always exactly 20, Sarvam's default page
+        // size is what's hiding older calls, not your filtering.
         console.log(
-            `[sync] ${finalLogs.length} logs, ${withAudio.length} with recording.`,
-            withAudio[0] ? `Sample host: ${new URL(withAudio[0].recording_url).hostname}` : "No recording URLs found"
+            `[sync] customer=${customerId || "-"} phone=${targetPhone || "-"} | ` +
+            `${totalFromSarvam} from Sarvam -> ${finalLogs.length} matched, ` +
+            `${finalLogs.filter((l) => l.has_recording).length} with recording, ` +
+            `${finalLogs.filter((l) => l.transcript.length > 0).length} with transcript.`
         );
-
-        console.log(`[sync] ${finalLogs.filter((l) => l.transcript.length > 0).length}/${finalLogs.length} logs have a transcript.`);
 
         return res.status(200).json({
             success: true,
@@ -645,7 +691,6 @@ export const syncSarvamCallLogs = async (req, res) => {
         });
     }
 };
-
 
 /*
  * =====================================================================
