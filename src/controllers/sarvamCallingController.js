@@ -156,7 +156,7 @@ export const triggerSarvamCall = async (req, res, next) => {
                     // Use the committed agent version.
                     // Change this if your current committed version
                     // is different.
-                    app_version: 11,
+                    app_version: 12,
 
                     connection_config: {
                         connection_id: cfg.connectionId,
