@@ -188,14 +188,14 @@ export const triggerSarvamCall = async (req, res, next) => {
                         ...(speaker && { text_to_speech_config: { speaker_name: speaker } }),
                         
                         // 2. Strict cost-control boundaries
-                        conversation_config: {
+                       /*  conversation_config: {
                             // Failsafe: Hard cut-off at 3 minutes (180 seconds). 
                             // Adjust this based on your ideal sales pitch length.
                             max_duration_seconds: 180, 
                             
                             // Failsafe: Hang up if the user is completely silent for 15 seconds
                             idle_timeout_seconds: 15,
-                        },
+                        }, */
                         
                         // 3. Drop the call immediately if it hits a voicemail box
                         telephony_config: {
