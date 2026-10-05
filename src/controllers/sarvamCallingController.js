@@ -535,6 +535,9 @@ const mapWithConcurrency = async (items, limit, fn) => {
     return results;
 };
 
+
+
+
 /*
  * =====================================================================
  * GET /sarvam/call-logs  (your existing sync route)
@@ -542,38 +545,9 @@ const mapWithConcurrency = async (items, limit, fn) => {
  * which the frontend passes to fetchSarvamAudio() on demand.
  * =====================================================================
  */
-/*
- * =====================================================================
- * GET /sarvam/call-logs?customerId=...&phone=...
- *
- * Same route, same controller. The only change: when the frontend passes
- * customerId and/or phone, we keep only that customer's interactions
- * BEFORE fetching transcripts, so a request only does work for one
- * customer. With no query params it behaves exactly as before.
- *
- * recording_url is the RAW Sarvam media URL, which the frontend passes to
- * fetchSarvamAudio() on demand.
- *
- * Helpers used below are the ones already in your file, unchanged:
- * getApiKey, mapWithConcurrency, fetchInteractionTranscript,
- * toAbsoluteMediaUrl
- * =====================================================================
- */
 
-/*
- * =====================================================================
- * REPLACE the old `last10` helper + `syncSarvamCallLogs` in your file
- * with everything below. Nothing else in the file changes.
- *
- * WHY: Sarvam's /interactions returns only ~20 items per request, oldest
- * first. Once more than 20 calls exist in the 30-day window, the newest
- * calls are cut off and never reach the frontend.
- *
- * FIX: fetchAllInteractions() asks again starting from the newest call it
- * already received (same start_datetime/end_datetime params you already
- * use) until nothing new comes back, then merges the results.
- * =====================================================================
- */
+
+
 
 // Last 10 digits, so "+91 78781 72452" and "7878172452" compare equal
 const last10 = (v) => String(v ?? "").replace(/\D/g, "").slice(-10);
@@ -691,14 +665,38 @@ export const syncSarvamCallLogs = async (req, res) => {
         // 1. customer_id match wins.
         // 2. Phone match is used only for logs that carry no customer_id
         //    (two customers can share one phone number, e.g. Amit and "test").
+       // ---- ONLY THIS CUSTOMER'S CALLS (before any transcript is fetched) ----
         if (customerId || targetPhone) {
             interactions = interactions.filter((log) => {
-                const logCustId = log.agent_variables?.customer_id
-                    ? String(log.agent_variables.customer_id)
-                    : "";
+                
+                // 1. Hunt down the customer_id in all known Sarvam payload locations
+                const rawCustId = 
+                    log.metadata?.customer_id || 
+                    log.webhook_config?.metadata?.customer_id || 
+                    log.agent_variables?.customer_id || 
+                    log.app_config?.agent_variables?.customer_id;
 
-                if (customerId && logCustId === customerId) return true;
-                if (!logCustId && targetPhone) return last10(log.user_contact) === targetPhone;
+                const logCustId = rawCustId ? String(rawCustId) : "";
+
+                // Match by Customer ID
+                if (customerId && logCustId === customerId) {
+                    return true;
+                }
+
+                // 2. If no customer ID was found in the payload, fallback to Phone matching
+                if (!logCustId && targetPhone) {
+                    // Hunt down the phone number in all known Sarvam payload locations
+                    const rawPhone = 
+                        log.user_phone_number || 
+                        log.user_contact || 
+                        log.user_config?.user_phone_number || 
+                        log.phone_number || 
+                        log.called_to || 
+                        "";
+                        
+                    return last10(rawPhone) === targetPhone;
+                }
+                
                 return false;
             });
         }
@@ -943,56 +941,7 @@ export const streamSarvamAudio = async (req, res) => {
     }
 };
 
-// ---------------------------------------------------------------------------
-// 3) TTS test (Sarvam model API, api.sarvam.ai, api-subscription-key)
-//    Diagnostic only: confirms whether a key works on the model API.
-// ---------------------------------------------------------------------------
-export const sarvamTtsTest = async (req, res) => {
-    try {
-        // Uses SARVAM_MODEL_API_KEY if set, otherwise falls back to SARVAM_API_KEY
-        const apiKey = (process.env.SARVAM_MODEL_API_KEY || process.env.SARVAM_API_KEY)?.trim();
-        if (!apiKey) {
-            return res.status(500).json({ message: "No Sarvam key loaded from .env" });
-        }
 
-        const { text = "Hello, this is a Sarvam text to speech test." } = req.body || {};
-
-        const response = await fetch("https://api.sarvam.ai/text-to-speech", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "api-subscription-key": apiKey, // different header than the Conversations API
-            },
-            body: JSON.stringify({
-                text,
-                target_language_code: "en-IN",
-                model: "bulbul:v3",
-            }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            console.error("Sarvam TTS error:", response.status, data);
-            return res.status(response.status).json({
-                message: "Sarvam TTS rejected the request",
-                details: data,
-            });
-        }
-
-        const audios = Array.isArray(data.audios) ? data.audios : [];
-        return res.status(200).json({
-            success: true,
-            message: "TTS call succeeded, so this key is valid for the Sarvam model API",
-            audioCount: audios.length,
-            firstAudioBase64Length: audios[0]?.length ?? 0,
-            requestId: data.request_id,
-        });
-    } catch (error) {
-        console.error("Sarvam TTS test failed:", error);
-        return res.status(500).json({ message: "TTS test failed", error: error.message });
-    }
-};
 
 
 
