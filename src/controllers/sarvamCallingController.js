@@ -1,4 +1,5 @@
 import prisma from '../config/prismaClient.js';
+import { sendBaileysWhatsApp } from '../config/twilio.js';
 import { prepareCallingInstruction } from '../jobs/sarvamAgentService.js';
 
 
@@ -341,101 +342,91 @@ export const triggerSarvamCall = async (req, res, next) => {
         });
     }
 };
+
+
 // ---------------------------------------------------------------------------
-// 2) Webhook (Sarvam POSTs here after each call attempt)
+// Webhook (Sarvam POSTs here after each call attempt)
 // ---------------------------------------------------------------------------
 export const sarvamCallWebhook = async (req, res) => {
     try {
         const payload = req.body;
 
-        console.log(
-            "========== SARVAM WEBHOOK RECEIVED =========="
-        );
+        console.log("========== SARVAM WEBHOOK RECEIVED ==========");
+        console.log(JSON.stringify(payload, null, 2));
 
-        console.log(
-            JSON.stringify(payload, null, 2)
-        );
-
-        const attemptId =
-            payload.attempt_id ||
-            payload.interaction_id;
+        const attemptId = payload.attempt_id || payload.interaction_id;
 
         if (!attemptId) {
-            console.error(
-                "Sarvam webhook: attempt_id / interaction_id missing"
-            );
-
+            console.error("Sarvam webhook: attempt_id / interaction_id missing");
             return res.status(400).json({
-                message:
-                    "attempt_id or interaction_id missing",
+                message: "attempt_id or interaction_id missing",
             });
         }
 
-        const metadataCustomerId =
-            payload.metadata?.customer_id || null;
+        const metadataCustomerId = payload.metadata?.customer_id || null;
 
+        // 1. Align data structure with syncSarvamCallLogs
         const updateData = {
-            callDuration:
-                payload.duration != null
-                    ? Math.round(Number(payload.duration))
-                    : null,
-
-            startTime: payload.start_datetime
-                ? new Date(payload.start_datetime)
+            callDuration: payload.duration != null ? Math.round(Number(payload.duration)) : null,
+            startTime: payload.start_datetime ? new Date(payload.start_datetime) : null,
+            endTime: payload.end_datetime ? new Date(payload.end_datetime) : null,
+            
+            // Handle transcript array format to match the sync logs
+            transcript: payload.interaction_transcript 
+                ? JSON.stringify(payload.interaction_transcript) 
                 : null,
-
-            endTime: payload.end_datetime
-                ? new Date(payload.end_datetime)
-                : null,
-
-            transcript:
-                payload.interaction_transcript
-                    ? JSON.stringify(
-                        payload.interaction_transcript
-                    )
-                    : null,
-
+            
+            // Capture recording URL for the DB to match sync flow
+            recordingUrl: payload.recording_url || payload.audio_url || null,
+            
             rawJson: payload,
         };
 
-        // If Sarvam sends a customer ID through metadata
-        // and the existing record does not have one,
-        // update it as well.
         if (metadataCustomerId) {
-            updateData.customerId =
-                metadataCustomerId;
+            updateData.customerId = metadataCustomerId;
         }
 
-        const result =
-            await prisma.sarvamCallLog.updateMany({
-                where: {
-                    participantIdentity: attemptId,
-                },
+        // 2. Fetch the existing call log BEFORE updating so we have the phone number
+        const existingLog = await prisma.sarvamCallLog.findFirst({
+            where: { participantIdentity: attemptId },
+            select: { calledTo: true }
+        });
 
-                data: updateData,
+        // 3. Update the database record
+        const result = await prisma.sarvamCallLog.updateMany({
+            where: { participantIdentity: attemptId },
+            data: updateData,
+        });
+
+        console.log("Sarvam call log updated:", {
+            attemptId,
+            updatedRecords: result.count,
+        });
+
+        // 4. Trigger WhatsApp message if the call has officially ended
+        if (payload.end_datetime && existingLog?.calledTo) {
+            // Baileys requires the number without the "+" sign (e.g., 919876543210)
+            const waNumber = existingLog.calledTo.replace("+", ""); 
+            
+            // Customize your post-call WhatsApp message here
+            const waMessage = `Hi! Thank you for speaking with our AI voice agent. Let us know if you have any further questions.`;
+
+            console.log(`Triggering post-call WhatsApp message to ${waNumber}...`);
+            
+            // Fire and forget: Do not await this so it doesn't block the Sarvam webhook response
+            sendBaileysWhatsApp(waNumber, waMessage).catch(err => {
+                console.error(`Failed to send WhatsApp message to ${waNumber}:`, err.message);
             });
-
-        console.log(
-            "Sarvam call log updated:",
-            {
-                attemptId,
-                updatedRecords: result.count,
-            }
-        );
+        }
 
         return res.status(200).json({
             received: true,
             updatedRecords: result.count,
         });
     } catch (error) {
-        console.error(
-            "Sarvam Webhook processing failed:",
-            error
-        );
-
+        console.error("Sarvam Webhook processing failed:", error);
         return res.status(500).json({
-            message:
-                "Webhook processing failed",
+            message: "Webhook processing failed",
             error: error.message,
         });
     }
