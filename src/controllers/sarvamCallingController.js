@@ -188,7 +188,7 @@ export const triggerSarvamCall = async (req, res, next) => {
                         ...(speaker && { text_to_speech_config: { speaker_name: speaker } }),
                         
                         // 2. Strict cost-control boundaries
-                       /*  conversation_config: {
+                     /*    conversation_config: {
                             // Failsafe: Hard cut-off at 3 minutes (180 seconds). 
                             // Adjust this based on your ideal sales pitch length.
                             max_duration_seconds: 180, 
@@ -409,6 +409,7 @@ export const sarvamCallWebhook = async (req, res) => {
     }
 };
 
+
 const SARVAM_MEDIA_HOST = "indus.sarvam.ai";
 const MAX_REDIRECTS = 5;
 
@@ -559,8 +560,95 @@ const mapWithConcurrency = async (items, limit, fn) => {
  * =====================================================================
  */
 
+/*
+ * =====================================================================
+ * REPLACE the old `last10` helper + `syncSarvamCallLogs` in your file
+ * with everything below. Nothing else in the file changes.
+ *
+ * WHY: Sarvam's /interactions returns only ~20 items per request, oldest
+ * first. Once more than 20 calls exist in the 30-day window, the newest
+ * calls are cut off and never reach the frontend.
+ *
+ * FIX: fetchAllInteractions() asks again starting from the newest call it
+ * already received (same start_datetime/end_datetime params you already
+ * use) until nothing new comes back, then merges the results.
+ * =====================================================================
+ */
+
 // Last 10 digits, so "+91 78781 72452" and "7878172452" compare equal
 const last10 = (v) => String(v ?? "").replace(/\D/g, "").slice(-10);
+
+// Sarvam start_datetime is UTC with no "Z" (e.g. "2026-10-05T09:11:26")
+const logTime = (log) => {
+    const s = String(log?.start_datetime ?? "");
+    if (!s) return NaN;
+    return new Date(/[zZ]$|[+-]\d\d:?\d\d$/.test(s) ? s : `${s}Z`).getTime();
+};
+
+const extractInteractions = (rawData) => {
+    if (Array.isArray(rawData)) return rawData;
+    if (Array.isArray(rawData?.data)) return rawData.data;
+    if (Array.isArray(rawData?.interactions)) return rawData.interactions;
+    if (Array.isArray(rawData?.items)) return rawData.items;
+    return Object.values(rawData || {}).find(Array.isArray) || [];
+};
+
+const MAX_ROUNDS = 30; // safety stop: at most 30 requests per sync
+
+// Gets EVERY interaction between start and end, even though Sarvam caps one response.
+const fetchAllInteractions = async (baseUrl, apiKey, start, end) => {
+    const seen = new Map(); // interaction_id -> log (dedupes overlaps)
+    let from = start.getTime();
+    let to = end.getTime();
+    let direction = null; // "asc" (oldest first) or "desc", detected from the first response
+    let firstPageSize = 0;
+    let rounds = 0;
+
+    for (; rounds < MAX_ROUNDS; rounds++) {
+        const params = new URLSearchParams({
+            start_datetime: new Date(from).toISOString(),
+            end_datetime: new Date(to).toISOString(),
+        });
+
+        const resp = await fetch(`${baseUrl}/interactions?${params.toString()}`, {
+            method: "GET",
+            headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
+        });
+
+        if (!resp.ok) {
+            const err = new Error("Failed to fetch interactions from Sarvam API");
+            err.status = resp.status;
+            err.details = await resp.text();
+            throw err;
+        }
+
+        const page = extractInteractions(await resp.json());
+        if (!page.length) break;
+
+        const fresh = page.filter((l) => l.interaction_id && !seen.has(l.interaction_id));
+        fresh.forEach((l) => seen.set(l.interaction_id, l));
+        if (!fresh.length) break; // nothing new: we have everything
+
+        if (rounds === 0) firstPageSize = page.length;
+        // A response smaller than the first (full) one means we reached the end
+        if (rounds > 0 && page.length < firstPageSize) break;
+
+        const times = page.map(logTime).filter(Number.isFinite);
+        if (!times.length) break;
+
+        if (!direction) {
+            const a = logTime(page[0]);
+            const b = logTime(page[page.length - 1]);
+            direction = a <= b ? "asc" : "desc";
+        }
+
+        // Move the window past what we already have (1s overlap, duplicates are ignored)
+        if (direction === "asc") from = Math.max(...times) - 1000;
+        else to = Math.min(...times) + 1000;
+    }
+
+    return { logs: [...seen.values()], rounds: rounds + 1, direction };
+};
 
 export const syncSarvamCallLogs = async (req, res) => {
     try {
@@ -586,45 +674,17 @@ export const syncSarvamCallLogs = async (req, res) => {
         const start = new Date();
         start.setDate(end.getDate() - 30);
 
-        const params = new URLSearchParams({
-            start_datetime: start.toISOString(),
-            end_datetime: end.toISOString(),
-            // OPTIONAL, UNCONFIRMED: if Sarvam supports a page-size param you can
-            // try it here to get more than the default 20 per response, e.g.
-            // limit: "500",
-        });
-
-        const interactionsResponse = await fetch(`${baseUrl}/interactions?${params.toString()}`, {
-            method: "GET",
-            headers: {
-                "X-API-Key": apiKey,
-                "Content-Type": "application/json",
-            },
-        });
-
-        if (!interactionsResponse.ok) {
-            const errorText = await interactionsResponse.text();
-            return res.status(interactionsResponse.status).json({
-                message: "Failed to fetch interactions from Sarvam API",
-                details: errorText,
-            });
+        let all;
+        try {
+            all = await fetchAllInteractions(baseUrl, apiKey, start, end);
+        } catch (e) {
+            if (e.status) {
+                return res.status(e.status).json({ message: e.message, details: e.details });
+            }
+            throw e;
         }
 
-        const rawData = await interactionsResponse.json();
-
-        let interactions = [];
-        if (Array.isArray(rawData)) {
-            interactions = rawData;
-        } else if (rawData.data && Array.isArray(rawData.data)) {
-            interactions = rawData.data;
-        } else if (rawData.interactions && Array.isArray(rawData.interactions)) {
-            interactions = rawData.interactions;
-        } else if (rawData.items && Array.isArray(rawData.items)) {
-            interactions = rawData.items;
-        } else {
-            interactions = Object.values(rawData).find(Array.isArray) || [];
-        }
-
+        let interactions = all.logs;
         const totalFromSarvam = interactions.length;
 
         // ---- ONLY THIS CUSTOMER'S CALLS (before any transcript is fetched) ----
@@ -669,11 +729,13 @@ export const syncSarvamCallLogs = async (req, res) => {
             };
         });
 
-        // Debug aid. If "from Sarvam" is always exactly 20, Sarvam's default page
-        // size is what's hiding older calls, not your filtering.
+        // Debug aid
+        const times = all.logs.map(logTime).filter(Number.isFinite);
         console.log(
             `[sync] customer=${customerId || "-"} phone=${targetPhone || "-"} | ` +
-            `${totalFromSarvam} from Sarvam -> ${finalLogs.length} matched, ` +
+            `${totalFromSarvam} from Sarvam in ${all.rounds} request(s), order=${all.direction || "?"}, ` +
+            `newest=${times.length ? new Date(Math.max(...times)).toISOString() : "-"} | ` +
+            `${finalLogs.length} matched, ` +
             `${finalLogs.filter((l) => l.has_recording).length} with recording, ` +
             `${finalLogs.filter((l) => l.transcript.length > 0).length} with transcript.`
         );
@@ -691,6 +753,7 @@ export const syncSarvamCallLogs = async (req, res) => {
         });
     }
 };
+
 
 /*
  * =====================================================================
