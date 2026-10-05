@@ -55,7 +55,7 @@ export const triggerSarvamCall = async (req, res, next) => {
         // 2. Request body
         // ---------------------------------------------------------
 
-        const { userPrompt, customerId, promptMode } = req.body;
+        const { userPrompt, customerId, promptMode, voice } = req.body;
 
         if (!userPrompt || !customerId) {
             return res.status(400).json({
@@ -63,6 +63,14 @@ export const triggerSarvamCall = async (req, res, next) => {
             });
         }
 
+        // Optional voice: only used when the frontend sends one
+        let speaker = null;
+        if (voice !== undefined && voice !== null && String(voice).trim() !== "") {
+            speaker = String(voice).trim().toLowerCase(); // Sarvam speaker ids are lowercase
+            if (!/^[a-z][a-z0-9_-]{1,30}$/.test(speaker)) {
+                return res.status(400).json({ message: "Invalid voice" });
+            }
+        }
         // ---------------------------------------------------------
         // 3. Get customer (only the fields the agent needs)
         // ---------------------------------------------------------
@@ -132,10 +140,6 @@ export const triggerSarvamCall = async (req, res, next) => {
             `/outbounds`;
 
         console.log("Sarvam instant outbound URL:", url);
-        console.log(" sarvam payload : ",    agentInstructions.agentPrompt,
-            "customer ", customer.customerName
-
-        )
 
         // ---------------------------------------------------------
         // 8. Create outbound call
@@ -178,6 +182,25 @@ export const triggerSarvamCall = async (req, res, next) => {
                     },
 
                     app_type: "agent",
+                    app_overrides:{
+                        // 1. Voice override (if selected in UI)
+                        ...(speaker && { text_to_speech_config: { speaker_name: speaker } }),
+                        
+                        // 2. Strict cost-control boundaries
+                        conversation_config: {
+                            // Failsafe: Hard cut-off at 3 minutes (180 seconds). 
+                            // Adjust this based on your ideal sales pitch length.
+                            max_duration_seconds: 180, 
+                            
+                            // Failsafe: Hang up if the user is completely silent for 15 seconds
+                            idle_timeout_seconds: 15,
+                        },
+                        
+                        // 3. Drop the call immediately if it hits a voicemail box
+                        telephony_config: {
+                            answering_machine_detection: "hangup" 
+                        }
+                    }
                 },
 
                 user_config: {
