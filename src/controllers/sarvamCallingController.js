@@ -349,86 +349,63 @@ export const triggerSarvamCall = async (req, res, next) => {
 // ---------------------------------------------------------------------------
 export const sarvamCallWebhook = async (req, res) => {
     try {
-        const payload = req.body;
+        const p = req.body || {};
+        console.log("SARVAM WEBHOOK RECEIVED:", JSON.stringify(p));
 
-        console.log("========== SARVAM WEBHOOK RECEIVED ==========");
-        console.log(JSON.stringify(payload, null, 2));
-
-        const attemptId = payload.attempt_id || payload.interaction_id;
-
+        const attemptId = p.attempt_id;
         if (!attemptId) {
-            console.error("Sarvam webhook: attempt_id / interaction_id missing");
-            return res.status(400).json({
-                message: "attempt_id or interaction_id missing",
-            });
+            return res.status(400).json({ message: "attempt_id missing" });
         }
 
-        const metadataCustomerId = payload.metadata?.customer_id || null;
-
-        // 1. Align data structure with syncSarvamCallLogs
-        const updateData = {
-            callDuration: payload.duration != null ? Math.round(Number(payload.duration)) : null,
-            startTime: payload.start_datetime ? new Date(payload.start_datetime) : null,
-            endTime: payload.end_datetime ? new Date(payload.end_datetime) : null,
-            
-            // Handle transcript array format to match the sync logs
-            transcript: payload.interaction_transcript 
-                ? JSON.stringify(payload.interaction_transcript) 
-                : null,
-            
-            // Capture recording URL for the DB to match sync flow
-            recordingUrl: payload.recording_url || payload.audio_url || null,
-            
-            rawJson: payload,
-        };
-
-        if (metadataCustomerId) {
-            updateData.customerId = metadataCustomerId;
-        }
-
-        // 2. Fetch the existing call log BEFORE updating so we have the phone number
-        const existingLog = await prisma.sarvamCallLog.findFirst({
+        const existing = await prisma.sarvamCallLog.findFirst({
             where: { participantIdentity: attemptId },
-            select: { calledTo: true }
+            select: { id: true, calledTo: true, rawJson: true },
         });
 
-        // 3. Update the database record
-        const result = await prisma.sarvamCallLog.updateMany({
-            where: { participantIdentity: attemptId },
+        if (!existing) {
+            // Still return 200 so Sarvam doesn't retry; the log row was never created.
+            console.warn("Webhook for unknown attempt:", attemptId);
+            return res.status(200).json({ received: true, updatedRecords: 0 });
+        }
+
+        // Duplicate delivery guard
+        if (existing.rawJson?.webhook?.attempt_id === attemptId) {
+            return res.status(200).json({ received: true, duplicate: true });
+        }
+
+        const endTime = new Date(); // webhook fires after the call; Sarvam sends no timestamps
+        const duration = p.duration != null ? Math.round(Number(p.duration)) : null;
+
+        const updateData = {
+            callDuration: duration,
+            endTime,
+            ...(duration != null && { startTime: new Date(endTime.getTime() - duration * 1000) }),
+            ...(p.interaction_transcript && { transcript: JSON.stringify(p.interaction_transcript) }),
+            // Keep what the trigger saved, add the webhook result alongside it
+            rawJson: { ...(existing.rawJson || {}), webhook: p },
+        };
+
+        const metaCustomerId = p.webhook_config?.metadata?.customer_id;
+        if (metaCustomerId) updateData.customerId = metaCustomerId;
+
+        await prisma.sarvamCallLog.update({
+            where: { id: existing.id },
             data: updateData,
         });
 
-        console.log("Sarvam call log updated:", {
-            attemptId,
-            updatedRecords: result.count,
-        });
-
-        // 4. Trigger WhatsApp message if the call has officially ended
-        if (payload.end_datetime && existingLog?.calledTo) {
-            // Baileys requires the number without the "+" sign (e.g., 919876543210)
-            const waNumber = existingLog.calledTo.replace("+", ""); 
-            
-            // Customize your post-call WhatsApp message here
+        // Only message people whose call actually connected
+        if (p.status === "connected" && existing.calledTo) {
+            const waNumber = existing.calledTo.replace("+", "");
             const waMessage = `Hi! Thank you for speaking with our AI voice agent. Let us know if you have any further questions.`;
-
-            console.log(`Triggering post-call WhatsApp message to ${waNumber}...`);
-            
-            // Fire and forget: Do not await this so it doesn't block the Sarvam webhook response
-            sendBaileysWhatsApp(waNumber, waMessage).catch(err => {
-                console.error(`Failed to send WhatsApp message to ${waNumber}:`, err.message);
-            });
+            sendBaileysWhatsApp(waNumber, waMessage).catch((err) =>
+                console.error(`WhatsApp failed for ${waNumber}:`, err.message)
+            );
         }
 
-        return res.status(200).json({
-            received: true,
-            updatedRecords: result.count,
-        });
+        return res.status(200).json({ received: true, status: p.status });
     } catch (error) {
-        console.error("Sarvam Webhook processing failed:", error);
-        return res.status(500).json({
-            message: "Webhook processing failed",
-            error: error.message,
-        });
+        console.error("Sarvam webhook failed:", error);
+        return res.status(500).json({ message: "Webhook processing failed", error: error.message });
     }
 };
 
