@@ -132,6 +132,10 @@ export const triggerSarvamCall = async (req, res, next) => {
             `/outbounds`;
 
         console.log("Sarvam instant outbound URL:", url);
+        console.log(" sarvam payload : ",    agentInstructions.agentPrompt,
+            "customer ", customer.customerName
+
+        )
 
         // ---------------------------------------------------------
         // 8. Create outbound call
