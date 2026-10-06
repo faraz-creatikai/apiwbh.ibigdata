@@ -1,6 +1,8 @@
 import prisma from '../config/prismaClient.js';
 import { sendBaileysWhatsApp } from '../config/twilio.js';
 import { prepareCallingInstruction } from '../jobs/sarvamAgentService.js';
+import { getActiveSarvamConfig } from '../utils/callingAgentConfig.js';
+
 
 
 const CUSTOMER_SELECT = {
@@ -14,26 +16,10 @@ const CUSTOMER_SELECT = {
 export const triggerSarvamCall = async (req, res, next) => {
     try {
         // ---------------------------------------------------------
-        // 1. Read environment variables
+        // 1. Read environment variables (Now dynamic with DB fallback)
         // ---------------------------------------------------------
 
-        const cfg = {
-            apiKey: process.env.VOICE_AGENT_API_KEY?.trim(),
-
-            orgId: process.env.SARVAM_ORG_ID?.trim(),
-
-            workspaceId: process.env.SARVAM_WORKSPACE_ID?.trim(),
-
-            appId: process.env.SARVAM_APP_ID?.trim(),
-
-            connectionId: process.env.SARVAM_CONNECTION_ID?.trim(),
-
-            agentPhoneNumber: process.env.SARVAM_CALLER_NUMBER?.trim(),
-
-            webhookBase: process.env.WEBHOOK_BASE_URL
-                ?.trim()
-                .replace(/\/$/, ""),
-        };
+        const cfg = await getActiveSarvamConfig();
 
         const missing = Object.entries(cfg)
             .filter(([, value]) => !value)
@@ -56,7 +42,7 @@ export const triggerSarvamCall = async (req, res, next) => {
         // 2. Request body
         // ---------------------------------------------------------
 
-        const { userPrompt, customerId, promptMode, voice } = req.body;
+        const { userPrompt, customerId, promptMode } = req.body;
 
         if (!userPrompt || !customerId) {
             return res.status(400).json({
@@ -64,14 +50,7 @@ export const triggerSarvamCall = async (req, res, next) => {
             });
         }
 
-        // Optional voice: only used when the frontend sends one
-        let speaker = null;
-        if (voice !== undefined && voice !== null && String(voice).trim() !== "") {
-            speaker = String(voice).trim().toLowerCase(); // Sarvam speaker ids are lowercase
-            if (!/^[a-z][a-z0-9_-]{1,30}$/.test(speaker)) {
-                return res.status(400).json({ message: "Invalid voice" });
-            }
-        }
+
         // ---------------------------------------------------------
         // 3. Get customer (only the fields the agent needs)
         // ---------------------------------------------------------
@@ -161,7 +140,7 @@ export const triggerSarvamCall = async (req, res, next) => {
                     // Use the committed agent version.
                     // Change this if your current committed version
                     // is different.
-                    app_version: 12,
+                    app_version: cfg.appVersion,
 
                     connection_config: {
                         connection_id: cfg.connectionId,
@@ -183,24 +162,21 @@ export const triggerSarvamCall = async (req, res, next) => {
                     },
 
                     app_type: "agent",
-                    app_overrides:{
-                        // 1. Voice override (if selected in UI)
-                        ...(speaker && { text_to_speech_config: { speaker_name: speaker } }),
-                        
-                        // 2. Strict cost-control boundaries
-                     /*    conversation_config: {
-                            // Failsafe: Hard cut-off at 3 minutes (180 seconds). 
-                            // Adjust this based on your ideal sales pitch length.
-                            max_duration_seconds: 180, 
-                            
-                            // Failsafe: Hang up if the user is completely silent for 15 seconds
-                            idle_timeout_seconds: 15,
-                        }, */
-                        
-                        // 3. Drop the call immediately if it hits a voicemail box
-                        telephony_config: {
-                            answering_machine_detection: "hangup" 
-                        }
+                    app_overrides: {
+                        // 1. Strict cost-control boundaries
+                        /*    conversation_config: {
+                               // Failsafe: Hard cut-off at 3 minutes (180 seconds). 
+                               // Adjust this based on your ideal sales pitch length.
+                               max_duration_seconds: 180, 
+                               
+                               // Failsafe: Hang up if the user is completely silent for 15 seconds
+                               idle_timeout_seconds: 15,
+                           }, */
+
+                        // 2. Drop the call immediately if it hits a voicemail box
+                      /*   telephony_config: {
+                            answering_machine_detection: "hangup"
+                        } */
                     }
                 },
 
@@ -342,7 +318,6 @@ export const triggerSarvamCall = async (req, res, next) => {
         });
     }
 };
-
 
 // ---------------------------------------------------------------------------
 // Webhook (Sarvam POSTs here after each call attempt)
@@ -556,7 +531,7 @@ const last10 = (v) => String(v ?? "").replace(/\D/g, "").slice(-10);
 const logTime = (log) => {
     const s = String(log?.start_datetime ?? "");
     if (!s) return NaN;
-    return new Date(/[zZ]$|[+-]\d\d:?\d\d$/.test(s) ? s : `${s}Z`).getTime();
+    return new Date(/[zZ]$\vert{}[+-]\d\d:?\d\d$/.test(s) ? s : `${s}Z`).getTime();
 };
 
 const extractInteractions = (rawData) => {
@@ -566,14 +541,6 @@ const extractInteractions = (rawData) => {
     if (Array.isArray(rawData?.items)) return rawData.items;
     return Object.values(rawData || {}).find(Array.isArray) || [];
 };
-
-/*
- * REPLACE in your controller file:
- *   - MAX_ROUNDS + fetchAllInteractions
- *   - syncSarvamCallLogs
- * with everything below. (last10, logTime, extractInteractions stay as they are.)
- * `prisma` is already imported at the top of your file.
- */
 
 // ---- where the customer id / phone can live inside a Sarvam interaction ----
 const getLogCustomerId = (log) => {
@@ -648,10 +615,11 @@ const fetchAllInteractions = async (baseUrl, apiKey, start, end) => {
 
 export const syncSarvamCallLogs = async (req, res) => {
     try {
-        const apiKey = getApiKey();
-        const orgId = process.env.SARVAM_ORG_ID?.trim();
-        const workspaceId = process.env.SARVAM_WORKSPACE_ID?.trim();
-        const appId = process.env.SARVAM_APP_ID?.trim();
+        const cfg = await getActiveSarvamConfig();
+        const apiKey = cfg.apiKey;
+        const orgId = cfg.orgId;
+        const workspaceId = cfg.workspaceId;
+        const appId = cfg.appId;
 
         if (!apiKey || !orgId || !workspaceId || !appId) {
             return res.status(500).json({
@@ -694,9 +662,9 @@ export const syncSarvamCallLogs = async (req, res) => {
             const logCustIds = [...new Set(interactions.map(getLogCustomerId).filter(Boolean))];
             const existing = logCustIds.length
                 ? await prisma.customer.findMany({
-                      where: { id: { in: logCustIds } },
-                      select: { id: true },
-                  })
+                    where: { id: { in: logCustIds } },
+                    select: { id: true },
+                })
                 : [];
             const knownIds = new Set(existing.map((c) => c.id));
 
@@ -852,10 +820,12 @@ const fetchFollowingRedirects = async (startUrl, apiKey, label) => {
 
 export const streamSarvamAudio = async (req, res) => {
     try {
-        const apiKey = getApiKey();
-        const orgId = process.env.SARVAM_ORG_ID?.trim();
-        const workspaceId = process.env.SARVAM_WORKSPACE_ID?.trim();
-        const appId = process.env.SARVAM_APP_ID?.trim();
+        const cfg = await getActiveSarvamConfig();
+        const apiKey = cfg.apiKey;
+        const orgId = cfg.orgId;
+        const workspaceId = cfg.workspaceId;
+        const appId = cfg.appId;
+
         if (!apiKey || !orgId || !workspaceId || !appId) {
             return res.status(500).json({ message: "Sarvam configuration missing" });
         }
@@ -973,15 +943,17 @@ export const streamSarvamAudio = async (req, res) => {
 // ---------------------------------------------------------------------------
 export const sarvamAuthDiagnose = async (req, res) => {
     try {
-        const key = process.env.SARVAM_API_KEY?.trim();
-        const workspaceId = process.env.SARVAM_WORKSPACE_ID?.trim();
+        const cfg = await getActiveSarvamConfig();
+        const key = cfg.apiKey;
+        const workspaceId = cfg.workspaceId;
+
         if (!key || !workspaceId) {
             return res.status(500).json({ message: "SARVAM_API_KEY or SARVAM_WORKSPACE_ID not loaded" });
         }
 
-        // Org IDs to try: the one from .env, plus the short id embedded in the key (sk_<orgId>_...)
+        // Org IDs to try: the one from .env/DB, plus the short id embedded in the key (sk_<orgId>_...)
         const keyOrgId = key.split("_")[1];
-        const orgIds = [...new Set([process.env.SARVAM_ORG_ID?.trim(), keyOrgId].filter(Boolean))];
+        const orgIds = [...new Set([cfg.orgId, keyOrgId].filter(Boolean))];
 
         const headerVariants = {
             "X-API-Key": { "X-API-Key": key },
