@@ -159,6 +159,7 @@ export const triggerSarvamCall = async (req, res, next) => {
                         customer_id: customer.id,
 
                         user_prompt: userPrompt,
+                        transfer_number: cfg.agentTansferNumber || null,
                     },
 
                     app_type: "agent",

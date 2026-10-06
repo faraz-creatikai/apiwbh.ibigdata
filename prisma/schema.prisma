@@ -119,6 +119,7 @@ model CallingAgentConfig {
   appVersion   Int    @default(1) // Added dynamic versioning
   connectionId String
   callerNumber String // Example: "+917965480147"
+  transferNumber String? @default("")
 
   // Status flag to quickly toggle which agent is currently live
   isActive Boolean @default(false)

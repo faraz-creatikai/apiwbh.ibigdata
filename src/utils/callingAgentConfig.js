@@ -19,6 +19,7 @@ export const getActiveSarvamConfig = async () => {
             appVersion: activeAgent?.appVersion || parseInt(process.env.SARVAM_APP_VERSION) || 12,
             connectionId: (activeAgent?.connectionId || process.env.SARVAM_CONNECTION_ID)?.trim(),
             agentPhoneNumber: (activeAgent?.callerNumber || process.env.SARVAM_CALLER_NUMBER)?.trim(),
+            agentTansferNumber: (activeAgent?.transferNumber || process.env.SARVAM_TRANSFER_NUMBER)?.trim(),
             // Webhook URL strictly remains from .env
             webhookBase: process.env.WEBHOOK_BASE_URL?.trim().replace(/\/$/, ""),
         };
@@ -32,6 +33,7 @@ export const getActiveSarvamConfig = async () => {
             appVersion: parseInt(process.env.SARVAM_APP_VERSION) || 12,
             connectionId: process.env.SARVAM_CONNECTION_ID?.trim(),
             agentPhoneNumber: process.env.SARVAM_CALLER_NUMBER?.trim(),
+            agentTansferNumber: process.env.SARVAM_TRANSFER_NUMBER?.trim(),
             webhookBase: process.env.WEBHOOK_BASE_URL?.trim().replace(/\/$/, ""),
         };
     }
