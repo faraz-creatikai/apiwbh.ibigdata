@@ -175,9 +175,9 @@ export const triggerSarvamCall = async (req, res, next) => {
                            }, */
 
                         // 2. Drop the call immediately if it hits a voicemail box
-                      /*   telephony_config: {
+                        telephony_config: {
                             answering_machine_detection: "hangup"
-                        } */
+                        }
                     }
                 },
 
@@ -986,5 +986,488 @@ export const sarvamAuthDiagnose = async (req, res) => {
     } catch (error) {
         console.error("Sarvam auth diagnose failed:", error);
         return res.status(500).json({ message: "Diagnostic failed", error: error.message });
+    }
+};
+
+
+
+
+
+
+
+
+
+
+
+
+// sarvam call report 
+
+
+const summaryCache = new Map();
+
+export const getSarvamCallReport = async (req, res) => {
+    try {
+        // ---------------------------------------------------------
+        // 0. Settings
+        // ---------------------------------------------------------
+        const IST_OFFSET_MIN = 330;
+        const DEFAULT_RANGE_DAYS = 30;
+        const MAX_RANGE_DAYS = 366;
+        const DEFAULT_PAGE_SIZE = 20;
+        const MAX_PAGE_SIZE = 100;
+        const SUMMARY_PAGE_SIZE = 200;
+        const SUMMARY_MAX_PAGES = 100;
+        const SUMMARY_CACHE_TTL_MS = 60 * 1000;
+        const SHORT_CALL_MAX_MESSAGES = 1;
+        // Changed to Math.ceil so calls under 30s don't become 0 billable minutes
+        const BILLABLE_ROUNDING = Math.ceil; 
+        const MEDIA_HOST = "indus.sarvam.ai";
+
+        // ---------------------------------------------------------
+        // 1. Sarvam config
+        // ---------------------------------------------------------
+        const cfg = await getActiveSarvamConfig();
+        const { apiKey, orgId, workspaceId, appId } = cfg;
+
+        if (!apiKey || !orgId || !workspaceId || !appId) {
+            return res.status(500).json({ message: "Sarvam analytics configuration missing" });
+        }
+
+        const attemptsUrl = `https://apps.sarvam.ai/api/analytics/v1/${orgId}/${workspaceId}/${appId}/attempts`;
+        // baseUrl required for fetching individual transcripts, same as sync controller
+        const baseUrl = `https://apps.sarvam.ai/api/analytics/v1/${orgId}/${workspaceId}/${appId}`;
+
+        // ---------------------------------------------------------
+        // 2. Read + validate the query string
+        // ---------------------------------------------------------
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, parseInt(req.query.limit, 10) || DEFAULT_PAGE_SIZE));
+        const status = ["all", "answered", "not_answered"].includes(req.query.status) ? req.query.status : "all";
+        const sortOrder = req.query.sortOrder === "asc" ? "asc" : "desc";
+        const refresh = req.query.refresh === "true";
+
+        const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+        const todayIst = new Date(Date.now() + IST_OFFSET_MIN * 60000).toISOString().slice(0, 10);
+        const endDate = dateRe.test(req.query.endDate) ? req.query.endDate : todayIst;
+        const startDate = dateRe.test(req.query.startDate)
+            ? req.query.startDate
+            : new Date(Date.parse(`${endDate}T00:00:00Z`) - (DEFAULT_RANGE_DAYS - 1) * 86400000)
+                .toISOString()
+                .slice(0, 10);
+
+        const startMs = Date.parse(`${startDate}T00:00:00Z`) - IST_OFFSET_MIN * 60000;
+        const endMs = Date.parse(`${endDate}T00:00:00Z`) + 86400000 - 1 - IST_OFFSET_MIN * 60000;
+
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+            return res.status(400).json({ message: "startDate and endDate must be real dates in YYYY-MM-DD format" });
+        }
+        if (startMs > endMs) return res.status(400).json({ message: "startDate must be on or before endDate" });
+        if ((endMs - startMs) / 86400000 > MAX_RANGE_DAYS) return res.status(400).json({ message: `Date range cannot be longer than ${MAX_RANGE_DAYS} days` });
+
+        const startIso = new Date(startMs).toISOString();
+        const endIso = new Date(endMs).toISOString();
+
+        // ---------------------------------------------------------
+        // FIXED: Bulletproof credit rate parsing (prevents empty string == 0 bug)
+        // ---------------------------------------------------------
+        let creditRate = 4; // default
+        const queryRate = req.query.creditsPerMinute;
+        const envRate = process.env.SARVAM_CREDITS_PER_MINUTE;
+
+        if (queryRate && !isNaN(Number(queryRate))) {
+            creditRate = Number(queryRate);
+        } else if (envRate && !isNaN(Number(envRate))) {
+            creditRate = Number(envRate);
+        }
+        if (creditRate <= 0) creditRate = 4; // Safety net
+
+        const billingResetMs = req.query.lastBillingDate ? Date.parse(req.query.lastBillingDate) : 0;
+
+        // ---------------------------------------------------------
+        // 3. THE TABLE
+        // ---------------------------------------------------------
+        const filterConditions = [];
+        if (status === "answered") filterConditions.push({ id: "1", field: "duration_in_seconds", operator: "greater_than", value: 0 });
+        else if (status === "not_answered") filterConditions.push({ id: "1", field: "duration_in_seconds", operator: "equals", value: 0 });
+
+        const listParams = new URLSearchParams({
+            start_datetime: startIso,
+            end_datetime: endIso,
+            limit: String(limit),
+            offset: String((page - 1) * limit),
+            sort_by: "start_datetime",
+            sort_order: sortOrder,
+        });
+        if (filterConditions.length) listParams.set("filter_conditions", JSON.stringify(filterConditions));
+
+        const listResp = await fetch(`${attemptsUrl}?${listParams.toString()}`, {
+            method: "GET",
+            headers: { "X-API-Key": apiKey, Accept: "application/json" },
+            signal: AbortSignal.timeout(30000),
+        });
+
+        if (!listResp.ok) {
+            const details = (await listResp.text()).slice(0, 500);
+            console.error("[call-report] attempts list failed:", listResp.status, details);
+            return res.status(listResp.status === 429 ? 429 : 502).json({
+                message: "Failed to fetch call attempts from Sarvam",
+                upstreamStatus: listResp.status,
+                details,
+            });
+        }
+
+        const listBody = await listResp.json();
+        const items = Array.isArray(listBody?.items) ? listBody.items : [];
+        const total = Number(listBody?.total) || 0;
+
+        // ---------------------------------------------------------
+        // 4. Transform Table Rows (Upgraded with concurrent Transcript fetching)
+        // ---------------------------------------------------------
+        const attemptIds = items.map((a) => a.attempt_id).filter(Boolean);
+        const dbLogs = attemptIds.length
+            ? await prisma.sarvamCallLog.findMany({
+                where: { participantIdentity: { in: attemptIds } },
+                select: { participantIdentity: true, customerId: true, calledTo: true },
+            })
+            : [];
+        const dbByAttempt = new Map(dbLogs.map((l) => [l.participantIdentity, l]));
+
+        const pageCustomerIds = new Set();
+        for (const a of items) {
+            const cid = dbByAttempt.get(a.attempt_id)?.customerId || a.agent_variables?.customer_id;
+            if (cid) pageCustomerIds.add(String(cid));
+        }
+        const pageCustomers = pageCustomerIds.size
+            ? await prisma.customer.findMany({
+                where: { id: { in: [...pageCustomerIds] } },
+                select: { id: true, customerName: true, ContactNumber: true, Campaign: true },
+            })
+            : [];
+        const customerById = new Map(pageCustomers.map((c) => [c.id, c]));
+
+        // Used Promise.all to fetch transcripts for the whole page concurrently without blocking
+        const calls = await Promise.all(items.map(async (a) => {
+            const sec = Number(a.duration_in_seconds) || 0;
+            const answered = sec > 0;
+            const billableMinutes = answered ? BILLABLE_ROUNDING(sec / 60) : 0;
+            const callCredits = Number((billableMinutes * creditRate).toFixed(2));
+
+            const dbLog = dbByAttempt.get(a.attempt_id);
+            const cid = dbLog?.customerId || a.agent_variables?.customer_id;
+            const customer = cid ? customerById.get(String(cid)) : null;
+
+            const startRaw = String(a.start_datetime || "");
+            const endRaw = String(a.end_datetime || "");
+            const startParsed = startRaw ? Date.parse(/[zZ]$\vert{}[+-]\d\d:?\d\d$/.test(startRaw) ? startRaw : `${startRaw}Z`) : NaN;
+            const endParsed = endRaw ? Date.parse(/[zZ]$\vert{}[+-]\d\d:?\d\d$/.test(endRaw) ? endRaw : `${endRaw}Z`) : NaN;
+
+            let recordingUrl = null;
+            if (typeof a.audio_url === "string" && a.audio_url && !a.audio_url.startsWith("data:")) {
+                try { recordingUrl = new URL(a.audio_url, `https://${MEDIA_HOST}`).href; } catch { recordingUrl = null; }
+            }
+
+            // --- BEGIN TRANSCRIPT FETCHING LOGIC (Matching sync controller) ---
+            let transcriptArray = [];
+            if (Array.isArray(a.transcript)) {
+                transcriptArray = a.transcript;
+            } else if (a.transcript && Array.isArray(a.transcript.messages)) {
+                transcriptArray = a.transcript.messages;
+            }
+
+            // Skip API calls if it clearly never connected
+            const neverConnected = sec === 0 && !(a.num_messages > 0);
+            if (!transcriptArray.length && !neverConnected && a.interaction_id) {
+                try {
+                    // Try inline function if available, fallback to manual fetch
+                    if (typeof fetchInteractionTranscript === 'function') {
+                        transcriptArray = await fetchInteractionTranscript(baseUrl, apiKey, a.interaction_id);
+                    } else {
+                        const trResp = await fetch(`${baseUrl}/interactions/${a.interaction_id}/transcript`, {
+                            headers: { "X-API-Key": apiKey, Accept: "application/json" },
+                            signal: AbortSignal.timeout(5000)
+                        });
+                        if (trResp.ok) {
+                            const trBody = await trResp.json();
+                            transcriptArray = Array.isArray(trBody) ? trBody : (trBody?.messages || []);
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`[call-report] Failed to load transcript for ${a.interaction_id}`);
+                }
+            }
+            // --- END TRANSCRIPT LOGIC ---
+
+            return {
+                attemptId: a.attempt_id || null,
+                interactionId: a.interaction_id || null,
+                customer: customer
+                    ? { id: customer.id, name: customer.customerName, phone: customer.ContactNumber, campaign: customer.Campaign }
+                    : (cid ? { id: String(cid), name: null, phone: null, campaign: null } : null),
+                phone: dbLog?.calledTo || a.user_contact_masked || null,
+                status: a.connectivity_status || (answered ? "connected" : "not_connected"),
+                answered,
+                failureReason: a.failure_reason || null,
+                endedBy: a.ended_by || null,
+                durationSeconds: sec,
+                billableMinutes,
+                credits: callCredits,
+                startedAt: Number.isFinite(startParsed) ? new Date(startParsed).toISOString() : null,
+                endedAt: Number.isFinite(endParsed) ? new Date(endParsed).toISOString() : null,
+                language: a.language_name || null,
+                numMessages: a.num_messages ?? 0,
+                avgAgentLatencySeconds: a.average_agent_response_time_in_seconds ?? null,
+                avgUserLatencySeconds: a.average_user_response_time_in_seconds ?? null,
+                retryAttempt: a.retry_attempt ?? 0,
+                channelDirection: a.channel_direction || null,
+                channelProvider: a.channel_provider || null,
+                channelType: a.channel_type || null,
+                campaignId: a.campaign_id || null,
+                isDebugCall: Boolean(a.is_debug_call),
+                hasRecording: Boolean(recordingUrl),
+                recordingUrl,
+                summary: a.agent_variables?.call_summary || null,
+                transcript: transcriptArray, // Exposing transcript in JSON response
+            };
+        }));
+
+        // ---------------------------------------------------------
+        // 5. THE TOTALS
+        // ---------------------------------------------------------
+        const cacheKey = [orgId, workspaceId, appId, startIso, endIso, billingResetMs].join("|");
+        let agg = refresh ? null : summaryCache.get(cacheKey);
+        if (agg && Date.now() - agg.at > SUMMARY_CACHE_TTL_MS) agg = null;
+        const summaryFromCache = Boolean(agg);
+
+        if (!agg) {
+            const byStatus = new Map();
+            const failureReasons = new Map();
+            const endedByMap = new Map();
+            const languages = new Map();
+            const customersAgg = new Map();
+            const dailyMap = new Map();
+            const hourly = Array.from({ length: 24 }, () => ({ attempts: 0, connected: 0 }));
+            
+            const t = {
+                attempts: 0, connected: 0, seconds: 0, billableMinutes: 0, longestSeconds: 0,
+                messages: 0, shortCalls: 0, retries: 0, debugCalls: 0,
+                agentLatencySum: 0, agentLatencyCount: 0, userLatencySum: 0, userLatencyCount: 0,
+                billingCycleBillableMinutes: 0,
+                billingCycleAnsweredCount: 0 
+            };
+
+            let offset = 0;
+            let sarvamTotal = 0;
+            let requests = 0;
+
+            while (requests < SUMMARY_MAX_PAGES) {
+                const pageParams = new URLSearchParams({
+                    start_datetime: startIso,
+                    end_datetime: endIso,
+                    limit: String(SUMMARY_PAGE_SIZE),
+                    offset: String(offset),
+                    sort_by: "start_datetime",
+                    sort_order: "asc",
+                });
+
+                const r = await fetch(`${attemptsUrl}?${pageParams.toString()}`, {
+                    method: "GET",
+                    headers: { "X-API-Key": apiKey, Accept: "application/json" },
+                    signal: AbortSignal.timeout(30000),
+                });
+
+                if (!r.ok) break;
+
+                const body = await r.json();
+                requests++;
+                const rows = Array.isArray(body?.items) ? body.items : [];
+                sarvamTotal = Number(body?.total) || sarvamTotal;
+
+                for (const a of rows) {
+                    const sec = Number(a.duration_in_seconds) || 0;
+                    const connected = sec > 0;
+                    const billable = connected ? BILLABLE_ROUNDING(sec / 60) : 0;
+
+                    t.attempts++;
+                    
+                    if (a.is_debug_call) t.debugCalls++;
+                    if ((a.retry_attempt || 0) > 0) t.retries++;
+
+                    const st = a.connectivity_status || (connected ? "connected" : "not_connected");
+                    byStatus.set(st, (byStatus.get(st) || 0) + 1);
+                    if (a.failure_reason) failureReasons.set(a.failure_reason, (failureReasons.get(a.failure_reason) || 0) + 1);
+
+                    const raw = String(a.start_datetime || "");
+                    const ms = raw ? Date.parse(/[zZ]$\vert{}[+-]\d\d:?\d\d$/.test(raw) ? raw : `${raw}Z`) : NaN;
+                    
+                    if (Number.isFinite(ms)) {
+                        const ist = new Date(ms + IST_OFFSET_MIN * 60000);
+                        const day = ist.toISOString().slice(0, 10);
+                        
+                        const d = dailyMap.get(day) || { attempts: 0, connected: 0, seconds: 0, billableMinutes: 0 };
+                        d.attempts++;
+                        if (connected) {
+                            d.connected++;
+                            d.seconds += sec;
+                            d.billableMinutes += billable;
+                        }
+                        dailyMap.set(day, d);
+
+                        const h = hourly[ist.getUTCHours()];
+                        h.attempts++;
+                        if (connected) h.connected++;
+                    }
+
+                    const cid = a.agent_variables?.customer_id ? String(a.agent_variables.customer_id) : "";
+                    if (cid) {
+                        const c = customersAgg.get(cid) || { attempts: 0, connected: 0, seconds: 0, billableMinutes: 0, fallbackPhone: null };
+                        c.attempts++;
+                        if (connected) {
+                            c.connected++;
+                            c.seconds += sec;
+                            c.billableMinutes += billable;
+                        }
+                        if (!c.fallbackPhone && a.user_contact_masked) {
+                            c.fallbackPhone = a.user_contact_masked;
+                        }
+                        customersAgg.set(cid, c);
+                    }
+
+                    if (connected) {
+                        t.connected++;
+                        t.seconds += sec;
+                        t.billableMinutes += billable;
+                        
+                        if (Number.isFinite(ms) && ms >= billingResetMs) {
+                            t.billingCycleBillableMinutes += billable;
+                            t.billingCycleAnsweredCount++;
+                        }
+
+                        if (sec > t.longestSeconds) t.longestSeconds = sec;
+                        t.messages += Number(a.num_messages) || 0;
+                        if ((Number(a.num_messages) || 0) <= SHORT_CALL_MAX_MESSAGES) t.shortCalls++;
+
+                        const by = a.ended_by || "UNKNOWN";
+                        endedByMap.set(by, (endedByMap.get(by) || 0) + 1);
+                        const lang = a.language_name || "Unknown";
+                        languages.set(lang, (languages.get(lang) || 0) + 1);
+
+                        if (a.average_agent_response_time_in_seconds != null) {
+                            t.agentLatencySum += Number(a.average_agent_response_time_in_seconds) || 0;
+                            t.agentLatencyCount++;
+                        }
+                        if (a.average_user_response_time_in_seconds != null) {
+                            t.userLatencySum += Number(a.average_user_response_time_in_seconds) || 0;
+                            t.userLatencyCount++;
+                        }
+                    }
+                }
+
+                offset += rows.length;
+                if (!rows.length || offset >= sarvamTotal) break;
+            }
+
+            agg = {
+                at: Date.now(),
+                requests,
+                truncated: offset < sarvamTotal,
+                countedAttempts: t.attempts,
+                t, dailyMap, hourly,
+                byStatus: [...byStatus.entries()].sort((x, y) => y[1] - x[1]).map(([name, count]) => ({ name, count })),
+                failureReasons: [...failureReasons.entries()].sort((x, y) => y[1] - x[1]).slice(0, 10).map(([name, count]) => ({ name, count })),
+                endedBy: [...endedByMap.entries()].sort((x, y) => y[1] - x[1]).map(([name, count]) => ({ name, count })),
+                languages: [...languages.entries()].sort((x, y) => y[1] - x[1]).map(([name, count]) => ({ name, count })),
+                topCustomerRows: [...customersAgg.entries()]
+                    .sort((x, y) => y[1].billableMinutes - x[1].billableMinutes || y[1].attempts - x[1].attempts)
+                    .slice(0, 10)
+                    .map(([customerId, c]) => ({ customerId, ...c })),
+            };
+
+            summaryCache.set(cacheKey, agg);
+            if (summaryCache.size > 50) summaryCache.delete(summaryCache.keys().next().value);
+        }
+
+        // ---------------------------------------------------------
+        // 6. Shape the totals for the frontend
+        // ---------------------------------------------------------
+        const t = agg.t;
+        const notAnswered = t.attempts - t.connected;
+
+        const cycleBillableMinutes = billingResetMs ? t.billingCycleBillableMinutes : t.billableMinutes;
+        const cycleAnswered = billingResetMs ? t.billingCycleAnsweredCount : t.connected;
+
+        const summary = {
+            totalCalls: t.attempts,
+            answered: t.connected,
+            notAnswered,
+            pickupRate: t.attempts ? Number(((t.connected / t.attempts) * 100).toFixed(1)) : 0,
+            totalTalkSeconds: Math.round(t.seconds),
+            avgCallSeconds: t.connected ? Math.round(t.seconds / t.connected) : 0,
+            longestCallSeconds: Math.round(t.longestSeconds),
+            billableMinutes: t.billableMinutes,
+            creditsUsed: Number((cycleBillableMinutes * creditRate).toFixed(2)),
+            avgCreditsPerAnsweredCall: cycleAnswered ? Number(((cycleBillableMinutes * creditRate) / cycleAnswered).toFixed(2)) : 0,
+            avgMessagesPerAnsweredCall: t.connected ? Number((t.messages / t.connected).toFixed(1)) : 0,
+            shortCalls: t.shortCalls,
+            shortCallRate: t.connected ? Number(((t.shortCalls / t.connected) * 100).toFixed(1)) : 0,
+            retriedAttempts: t.retries,
+            debugCalls: t.debugCalls,
+            avgAgentLatencySeconds: t.agentLatencyCount ? Number((t.agentLatencySum / t.agentLatencyCount).toFixed(2)) : null,
+            avgUserLatencySeconds: t.userLatencyCount ? Number((t.userLatencySum / t.userLatencyCount).toFixed(2)) : null,
+        };
+
+        const daily = [];
+        for (let ts = Date.parse(`${startDate}T00:00:00Z`); ts <= Date.parse(`${endDate}T00:00:00Z`); ts += 86400000) {
+            const date = new Date(ts).toISOString().slice(0, 10);
+            const d = agg.dailyMap.get(date) || { attempts: 0, connected: 0, seconds: 0, billableMinutes: 0 };
+            daily.push({
+                date, attempts: d.attempts, answered: d.connected, notAnswered: d.attempts - d.connected,
+                talkSeconds: Math.round(d.seconds), billableMinutes: d.billableMinutes, 
+                credits: Number((d.billableMinutes * creditRate).toFixed(2)),
+            });
+        }
+
+        const hourly = agg.hourly.map((h, hour) => ({
+            hour, label: `${String(hour).padStart(2, "0")}:00`, attempts: h.attempts, answered: h.connected,
+            pickupRate: h.attempts ? Number(((h.connected / h.attempts) * 100).toFixed(1)) : 0,
+        }));
+
+        const topIds = agg.topCustomerRows.map((c) => c.customerId);
+        const topCustomerDocs = topIds.length
+            ? await prisma.customer.findMany({ where: { id: { in: topIds } }, select: { id: true, customerName: true, ContactNumber: true } })
+            : [];
+        const topNameById = new Map(topCustomerDocs.map((c) => [c.id, c]));
+        
+        const topCustomers = agg.topCustomerRows.map((c) => ({
+            customerId: c.customerId, 
+            name: topNameById.get(c.customerId)?.customerName || "Unknown", 
+            phone: topNameById.get(c.customerId)?.ContactNumber || c.fallbackPhone || "Unknown",
+            calls: c.attempts, 
+            answered: c.connected, 
+            talkSeconds: Math.round(c.seconds), 
+            billableMinutes: c.billableMinutes, 
+            credits: Number((c.billableMinutes * creditRate).toFixed(2)),
+        }));
+
+        const totalPages = Math.max(1, Math.ceil(total / limit));
+
+        return res.status(200).json({
+            success: true,
+            totalCreditsLeft: null, 
+            filters: { startDate, endDate, timezone: "Asia/Kolkata", status, sortOrder },
+            pagination: { page, limit, total, totalPages, hasNext: (page - 1) * limit + items.length < total, hasPrev: page > 1 },
+            summary, daily, hourly,
+            breakdowns: { status: agg.byStatus, failureReasons: agg.failureReasons, endedBy: agg.endedBy, languages: agg.languages },
+            topCustomers, calls,
+            meta: {
+                summaryFromCache, summarySarvamRequests: agg.requests, summaryTruncated: agg.truncated,
+                creditsNote: billingResetMs 
+                    ? `Showing credits used strictly AFTER your last recharge date.`
+                    : `Pass ?lastBillingDate= to reset the credit counter to 0 after a top-up.`,
+                generatedAt: new Date().toISOString(),
+            },
+        });
+    } catch (error) {
+        console.error("Sarvam call report failed:", error);
+        return res.status(500).json({ message: "Internal server error building call report", error: error.message });
     }
 };

@@ -17,7 +17,7 @@ export const getCallingConfigs = async (req, res) => {
 // CREATE new configuration
 export const createCallingConfig = async (req, res) => {
     try {
-        const { name, description, apiKey, orgId, workspaceId, appId, appVersion, connectionId, callerNumber, isActive } = req.body;
+        const { name, description, apiKey, orgId, workspaceId, appId, appVersion, connectionId, callerNumber,transferNumber, isActive } = req.body;
         const adminId = req.admin?.id || req.user?.id; 
 
         if (!adminId) return res.status(401).json({ message: "Unauthorized: Admin ID not found" });
@@ -35,7 +35,7 @@ export const createCallingConfig = async (req, res) => {
                 description: description || "",
                 apiKey, orgId, workspaceId, appId,
                 appVersion: appVersion ? parseInt(appVersion) : 12,
-                connectionId, callerNumber,
+                connectionId, callerNumber, transferNumber,
                 isActive: Boolean(isActive),
                 adminId
             }
@@ -52,7 +52,7 @@ export const createCallingConfig = async (req, res) => {
 export const updateCallingConfig = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, description, apiKey, orgId, workspaceId, appId, appVersion, connectionId, callerNumber, isActive } = req.body;
+        const { name, description, apiKey, orgId, workspaceId, appId, appVersion, connectionId, callerNumber, transferNumber, isActive } = req.body;
 
         if (isActive) {
             await prisma.callingAgentConfig.updateMany({
@@ -66,7 +66,7 @@ export const updateCallingConfig = async (req, res) => {
             data: {
                 name, description, apiKey, orgId, workspaceId, appId,
                 appVersion: appVersion ? parseInt(appVersion) : undefined,
-                connectionId, callerNumber,
+                connectionId, callerNumber, transferNumber,
                 isActive: isActive !== undefined ? Boolean(isActive) : undefined,
             }
         });

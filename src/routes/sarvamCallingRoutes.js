@@ -1,6 +1,6 @@
 import express from "express";
 import { protectRoute } from "../middlewares/auth.js";
-import { sarvamAuthDiagnose, sarvamCallWebhook,  streamSarvamAudio, syncSarvamCallLogs, triggerSarvamCall } from "../controllers/sarvamCallingController.js";
+import { getSarvamCallReport, sarvamAuthDiagnose, sarvamCallWebhook,  streamSarvamAudio, syncSarvamCallLogs, triggerSarvamCall } from "../controllers/sarvamCallingController.js";
 import { createCallingConfig, deleteCallingConfig, getCallingConfigs, setActiveConfig, updateCallingConfig } from "../controllers/callingAgentConfigController.js";
 
 
@@ -14,6 +14,7 @@ sarvamCallingRoutes.get("/audio", protectRoute, streamSarvamAudio);
 /* sarvamCallingRoutes.post('/ttsTest', sarvamTtsTest); */
 sarvamCallingRoutes.get('/authDiagnose', sarvamAuthDiagnose);
 
+sarvamCallingRoutes.get("/call-report", protectRoute, getSarvamCallReport);
 
 // New CallingAgentConfig CRUD Routes (Protected)
 sarvamCallingRoutes.get('/config', protectRoute, getCallingConfigs);
