@@ -998,11 +998,7 @@ export const sarvamAuthDiagnose = async (req, res) => {
 
 
 
-
-
 // sarvam call report 
-
-
 const summaryCache = new Map();
 
 export const getSarvamCallReport = async (req, res) => {
@@ -1020,7 +1016,7 @@ export const getSarvamCallReport = async (req, res) => {
         const SUMMARY_CACHE_TTL_MS = 60 * 1000;
         const SHORT_CALL_MAX_MESSAGES = 1;
         // Changed to Math.ceil so calls under 30s don't become 0 billable minutes
-        const BILLABLE_ROUNDING = Math.ceil; 
+        const BILLABLE_ROUNDING = Math.ceil;
         const MEDIA_HOST = "indus.sarvam.ai";
 
         // ---------------------------------------------------------
@@ -1087,8 +1083,9 @@ export const getSarvamCallReport = async (req, res) => {
         // 3. THE TABLE
         // ---------------------------------------------------------
         const filterConditions = [];
-        if (status === "answered") filterConditions.push({ id: "1", field: "duration_in_seconds", operator: "greater_than", value: 0 });
-        else if (status === "not_answered") filterConditions.push({ id: "1", field: "duration_in_seconds", operator: "equals", value: 0 });
+        // FIX APPLIED HERE: Changed value: 0 to value: "0" because Sarvam strictly expects a string
+        if (status === "answered") filterConditions.push({ id: "1", field: "duration_in_seconds", operator: "greater_than", value: "0" });
+        else if (status === "not_answered") filterConditions.push({ id: "1", field: "duration_in_seconds", operator: "equals", value: "0" });
 
         const listParams = new URLSearchParams({
             start_datetime: startIso,
@@ -1246,13 +1243,13 @@ export const getSarvamCallReport = async (req, res) => {
             const customersAgg = new Map();
             const dailyMap = new Map();
             const hourly = Array.from({ length: 24 }, () => ({ attempts: 0, connected: 0 }));
-            
+
             const t = {
                 attempts: 0, connected: 0, seconds: 0, billableMinutes: 0, longestSeconds: 0,
                 messages: 0, shortCalls: 0, retries: 0, debugCalls: 0,
                 agentLatencySum: 0, agentLatencyCount: 0, userLatencySum: 0, userLatencyCount: 0,
                 billingCycleBillableMinutes: 0,
-                billingCycleAnsweredCount: 0 
+                billingCycleAnsweredCount: 0
             };
 
             let offset = 0;
@@ -1288,7 +1285,7 @@ export const getSarvamCallReport = async (req, res) => {
                     const billable = connected ? BILLABLE_ROUNDING(sec / 60) : 0;
 
                     t.attempts++;
-                    
+
                     if (a.is_debug_call) t.debugCalls++;
                     if ((a.retry_attempt || 0) > 0) t.retries++;
 
@@ -1298,11 +1295,11 @@ export const getSarvamCallReport = async (req, res) => {
 
                     const raw = String(a.start_datetime || "");
                     const ms = raw ? Date.parse(/[zZ]$\vert{}[+-]\d\d:?\d\d$/.test(raw) ? raw : `${raw}Z`) : NaN;
-                    
+
                     if (Number.isFinite(ms)) {
                         const ist = new Date(ms + IST_OFFSET_MIN * 60000);
                         const day = ist.toISOString().slice(0, 10);
-                        
+
                         const d = dailyMap.get(day) || { attempts: 0, connected: 0, seconds: 0, billableMinutes: 0 };
                         d.attempts++;
                         if (connected) {
@@ -1336,7 +1333,7 @@ export const getSarvamCallReport = async (req, res) => {
                         t.connected++;
                         t.seconds += sec;
                         t.billableMinutes += billable;
-                        
+
                         if (Number.isFinite(ms) && ms >= billingResetMs) {
                             t.billingCycleBillableMinutes += billable;
                             t.billingCycleAnsweredCount++;
@@ -1421,7 +1418,7 @@ export const getSarvamCallReport = async (req, res) => {
             const d = agg.dailyMap.get(date) || { attempts: 0, connected: 0, seconds: 0, billableMinutes: 0 };
             daily.push({
                 date, attempts: d.attempts, answered: d.connected, notAnswered: d.attempts - d.connected,
-                talkSeconds: Math.round(d.seconds), billableMinutes: d.billableMinutes, 
+                talkSeconds: Math.round(d.seconds), billableMinutes: d.billableMinutes,
                 credits: Number((d.billableMinutes * creditRate).toFixed(2)),
             });
         }
@@ -1436,15 +1433,15 @@ export const getSarvamCallReport = async (req, res) => {
             ? await prisma.customer.findMany({ where: { id: { in: topIds } }, select: { id: true, customerName: true, ContactNumber: true } })
             : [];
         const topNameById = new Map(topCustomerDocs.map((c) => [c.id, c]));
-        
+
         const topCustomers = agg.topCustomerRows.map((c) => ({
-            customerId: c.customerId, 
-            name: topNameById.get(c.customerId)?.customerName || "Unknown", 
+            customerId: c.customerId,
+            name: topNameById.get(c.customerId)?.customerName || "Unknown",
             phone: topNameById.get(c.customerId)?.ContactNumber || c.fallbackPhone || "Unknown",
-            calls: c.attempts, 
-            answered: c.connected, 
-            talkSeconds: Math.round(c.seconds), 
-            billableMinutes: c.billableMinutes, 
+            calls: c.attempts,
+            answered: c.connected,
+            talkSeconds: Math.round(c.seconds),
+            billableMinutes: c.billableMinutes,
             credits: Number((c.billableMinutes * creditRate).toFixed(2)),
         }));
 
@@ -1452,7 +1449,7 @@ export const getSarvamCallReport = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            totalCreditsLeft: null, 
+            totalCreditsLeft: null,
             filters: { startDate, endDate, timezone: "Asia/Kolkata", status, sortOrder },
             pagination: { page, limit, total, totalPages, hasNext: (page - 1) * limit + items.length < total, hasPrev: page > 1 },
             summary, daily, hourly,
@@ -1460,7 +1457,7 @@ export const getSarvamCallReport = async (req, res) => {
             topCustomers, calls,
             meta: {
                 summaryFromCache, summarySarvamRequests: agg.requests, summaryTruncated: agg.truncated,
-                creditsNote: billingResetMs 
+                creditsNote: billingResetMs
                     ? `Showing credits used strictly AFTER your last recharge date.`
                     : `Pass ?lastBillingDate= to reset the credit counter to 0 after a top-up.`,
                 generatedAt: new Date().toISOString(),
