@@ -1083,7 +1083,7 @@ export const getCustomer = async (req, res, next) => {
       Campaign, CustomerType, CustomerSubType, LeadTemperature, StatusType,
       City, Location, SubLocation, LeadType, Keyword, SearchIn, ReferenceId,
       MinPrice, MaxPrice, Price, isFavourite, StartDate, EndDate, Limit,
-      Skip = 0, sort, User, ContactNumber,CountryCode, CustomerFields,
+      Skip = 0, sort, User, ContactNumber, CountryCode, CustomerFields,
     } = req.query;
 
     let AND = [];
@@ -2116,21 +2116,31 @@ export const assignCustomer = async (req, res, next) => {
     }
 
     // ------------------------------------------------
-    // UPDATE — ✅ connect OR disconnect based on action
+    // UPDATE — connect OR disconnect based on action
     // ------------------------------------------------
     const prismaRelationAction = action === "remove" ? "disconnect" : "connect";
 
-    const updates = customers.map((customer) =>
-      prisma.customer.update({
+    // 1. Force order to match frontend array ONLY IF customerIds were explicitly provided
+    if (customerIds && customerIds.length > 0) {
+      customers.sort((a, b) => customerIds.indexOf(a.id) - customerIds.indexOf(b.id));
+    }
+
+    const baseTime = Date.now();
+
+    const updates = customers.map((customer, index) => {
+      // 2. Stagger timestamps by 1 second (1000ms) per record.
+      const staggeredTime = new Date(baseTime - (index * 1000));
+
+      return prisma.customer.update({
         where: { id: customer.id },
         data: {
-          updatedAt: new Date(),
+          updatedAt: staggeredTime, // 🚀 Apply staggered timestamp
           AssignTo: {
             [prismaRelationAction]: assignToId.map((id) => ({ id })),
           },
         },
-      })
-    );
+      });
+    });
 
     await Promise.all(updates);
 
@@ -3735,7 +3745,7 @@ export const archiveCustomer = async (req, res, next) => {
   try {
     const admin = req.admin;
     const adminId = admin.id || admin._id;
-    
+
     // Accept from body, fallback to params for backward compatibility
     let customerIds = req.body.customerIds || (req.params.id ? [req.params.id] : []);
 
@@ -3747,7 +3757,7 @@ export const archiveCustomer = async (req, res, next) => {
         customerIds = [];
       }
     }
-    
+
     if (!Array.isArray(customerIds) || customerIds.length === 0) {
       return res.status(400).json({ success: false, message: "No customer IDs provided" });
     }
@@ -3761,13 +3771,13 @@ export const archiveCustomer = async (req, res, next) => {
     // createMany with skipDuplicates prevents unique constraint errors on double-clicks
     const archived = await prisma.customerArchive.createMany({
       data: archiveData,
-      skipDuplicates: true, 
+      skipDuplicates: true,
     });
 
-    return res.status(200).json({ 
-      success: true, 
+    return res.status(200).json({
+      success: true,
       count: archived.count,
-      message: `${archived.count} customer(s) archived` 
+      message: `${archived.count} customer(s) archived`
     });
   } catch (error) {
     next(new ApiError(500, error.message));
@@ -3779,7 +3789,7 @@ export const unarchiveCustomer = async (req, res, next) => {
   try {
     const admin = req.admin;
     const adminId = admin.id || admin._id;
-    
+
     let customerIds = req.body.customerIds || (req.params.id ? [req.params.id] : []);
 
     if (typeof customerIds === "string") {
@@ -3795,16 +3805,16 @@ export const unarchiveCustomer = async (req, res, next) => {
     }
 
     const unarchived = await prisma.customerArchive.deleteMany({
-      where: { 
-        customerId: { in: customerIds }, 
-        adminId 
+      where: {
+        customerId: { in: customerIds },
+        adminId
       },
     });
 
-    return res.status(200).json({ 
-      success: true, 
+    return res.status(200).json({
+      success: true,
       count: unarchived.count,
-      message: `${unarchived.count} customer(s) unarchived` 
+      message: `${unarchived.count} customer(s) unarchived`
     });
   } catch (error) {
     next(new ApiError(500, error.message));
