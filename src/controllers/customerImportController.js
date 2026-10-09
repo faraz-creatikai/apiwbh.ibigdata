@@ -33,23 +33,130 @@ const keyMap = {
   url: "URL",
 };
 
-// Clean numbers
-const cleanNumber = (num) => {
-  if (!num) return "";
-  return String(num)
-    .trim()
-    .replace(/[^0-9]/g, "");
+// code -> valid national-number lengths (some countries allow a small range)
+const COUNTRY_CODES = [
+  { code: "971", lengths: [9] },
+  { code: "966", lengths: [9] },
+  { code: "974", lengths: [8] },
+  { code: "973", lengths: [8] },
+  { code: "968", lengths: [8] },
+  { code: "965", lengths: [7, 8] },
+  { code: "977", lengths: [10] },
+  { code: "880", lengths: [10] },
+  { code: "234", lengths: [10] },
+  { code: "94",  lengths: [9] },
+  { code: "92",  lengths: [10] },
+  { code: "91",  lengths: [10] },
+  { code: "86",  lengths: [11] },
+  { code: "65",  lengths: [8] },
+  { code: "63",  lengths: [10] },
+  { code: "62",  lengths: [9, 10, 11] },
+  { code: "61",  lengths: [9] },
+  { code: "60",  lengths: [9, 10] },
+  { code: "49",  lengths: [10, 11] },
+  { code: "44",  lengths: [10] },
+  { code: "33",  lengths: [9] },
+  { code: "27",  lengths: [9] },
+  { code: "20",  lengths: [10] },
+  { code: "1",   lengths: [10] },
+].sort((a, b) => b.code.length - a.code.length); // longest code checked first
+
+const DEFAULT_COUNTRY_CODE = "91"; // assume domestic when no code is present
+const MIN_LOCAL_LEN = 6;
+const MAX_LOCAL_LEN = 11;
+
+// Add a parameter to know if we detected a '+' sign
+// Returns { countryCode, number } from a raw digit string
+const splitCountryCode = (digits, hasExplicitCountryCode = false) => {
+  if (!digits) return { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
+
+  // 1. MATCH KNOWN COUNTRY CODES FIRST
+  // This correctly identifies numbers like "18475970044" (US) or "919876543210" (India)
+  // even if the user forgot to include the '+' symbol.
+  for (const { code, lengths } of COUNTRY_CODES) {
+    if (digits.startsWith(code)) {
+      const rest = digits.slice(code.length);
+      
+      let cleanedRest = rest;
+      if (cleanedRest.startsWith("0")) {
+        cleanedRest = cleanedRest.replace(/^0+/, "");
+      }
+
+      if (lengths.includes(rest.length)) {
+        return { countryCode: code, number: rest };
+      } else if (lengths.includes(cleanedRest.length)) {
+        return { countryCode: code, number: cleanedRest };
+      }
+    }
+  }
+
+  // 2. DOMESTIC FALLBACK
+  // If no country code matches perfectly, and there is no '+' sign, assume it's domestic (India).
+  if (!hasExplicitCountryCode && digits.length >= MIN_LOCAL_LEN && digits.length <= MAX_LOCAL_LEN) {
+    return { countryCode: DEFAULT_COUNTRY_CODE, number: digits };
+  }
+
+  // 3. UNKNOWN LONG NUMBER FALLBACK
+  // If it's a very long number with an unrecognized country code, grab the last 10 digits.
+  if (digits.length > MAX_LOCAL_LEN) {
+    const guessLen = 10; 
+    const number = digits.slice(-guessLen);
+    const countryCode = digits.slice(0, digits.length - guessLen) || DEFAULT_COUNTRY_CODE;
+    return { countryCode, number };
+  }
+
+  return { countryCode: DEFAULT_COUNTRY_CODE, number: digits };
 };
 
-// Extract phone numbers
-const extractNumbers = (raw) => {
-  if (!raw) return "";
-  const nums = String(raw)
-    .split(/[,/;|\-]/)
-    .map(cleanNumber)
-    .filter((n) => n.length >= 10);
-  return [...new Set(nums)].join(",");
+
+
+// Only relevant if you have countries whose national length overlaps
+// another country's *code+shorter-number* combo. Skip if not needed.
+const isAmbiguousLength = () => false;
+
+const cleanNumber = (num) => {
+  if (!num) return { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
+  
+  const strNum = String(num).trim();
+  
+  // Check for the '+' sign or '00' international prefix before we strip characters
+  const hasPlus = strNum.startsWith("+") || strNum.startsWith("00"); 
+  
+  // Remove ALL non-digit characters (strips spaces, -, _, (), alphabets, and symbols)
+  let digits = strNum.replace(/\D/g, "");
+  
+  // If they used '00' for international dialling, strip it so the country code matches perfectly
+  if (strNum.startsWith("00")) {
+    digits = digits.substring(2);
+  }
+  
+  // If it's a domestic number starting with 0 (e.g. 08787349821), strip the zero
+  // ONLY if stripping it results in a valid local length number.
+  if (!hasPlus && digits.startsWith("0")) {
+    const withoutZero = digits.replace(/^0+/, "");
+    if (withoutZero.length >= MIN_LOCAL_LEN && withoutZero.length <= MAX_LOCAL_LEN) {
+      digits = withoutZero;
+    }
+  }
+  
+  // Pass the boolean flag so the splitter knows to look for a country code
+  return splitCountryCode(digits, hasPlus);
 };
+
+// Extract first valid phone number (with its country code) from a raw cell
+const extractNumbers = (raw) => {
+  if (!raw) return { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
+
+  // SPLIT FIX: Removed the hyphen (\-) from the split regex so formatted numbers stay intact.
+  // We only split on comma, semicolon, slash, pipe, or newline.
+  const candidates = String(raw)
+    .split(/[,;/|\n]/)
+    .map(cleanNumber)
+    .filter((n) => n.number.length >= MIN_LOCAL_LEN && n.number.length <= MAX_LOCAL_LEN);
+
+  return candidates[0] || { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
+};
+
 
 // Normalize row keys
 const normalizeKeys = (row, manual = {}) => {
@@ -161,7 +268,7 @@ export const importCustomers = async (req, res, next) => {
     // ----------------------------
     const processed = normalized.map((r) => {
       const cleanedContacts = extractNumbers(r.ContactNumber);
-      const firstPhone = cleanedContacts ? cleanedContacts.split(",")[0] : "";
+       const { countryCode, number: firstPhone } = extractNumbers(r.ContactNumber);
 
       const email = safeTrim(r.Email) || null;
 
@@ -240,6 +347,7 @@ export const importCustomers = async (req, res, next) => {
         CustomerFields: customerFields,
         customerName: safeTrim(r.customerName || r.CustomerName || "") || "",
         ContactNumber: firstPhone,
+        CountryCode: countryCode,
         Email: email,
         City: safeTrim(r.City) || "",
         Location: safeTrim(r.Location) || "",
@@ -685,7 +793,7 @@ export const importCustomers = async (req, res, next) => {
 
         imported.push({ ...row, id: created.id });
 
-        //ACTIVITY LOG TRIGGER
+         //ACTIVITY LOG TRIGGER
         logActivity({
           req, 
           admin,

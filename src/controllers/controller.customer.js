@@ -11,6 +11,7 @@ import { CallingAgent, DataMiningAgent, QualifyAgent } from "../ai/agent.js";
 import { callingAgentPrompt } from "../ai/prompts/callingAgentPrompt.js";
 import { notifyCustomerCreated } from "../jobs/notification/notificationEvents.js";
 import { diffFields, logActivity } from "../utils/activityLogger.js";
+import { cleanNationalNumber, DEFAULT_COUNTRY_CODE } from "../utils/phone.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -1082,7 +1083,7 @@ export const getCustomer = async (req, res, next) => {
       Campaign, CustomerType, CustomerSubType, LeadTemperature, StatusType,
       City, Location, SubLocation, LeadType, Keyword, SearchIn, ReferenceId,
       MinPrice, MaxPrice, Price, isFavourite, StartDate, EndDate, Limit,
-      Skip = 0, sort, User, ContactNumber, CustomerFields,
+      Skip = 0, sort, User, ContactNumber,CountryCode, CustomerFields,
     } = req.query;
 
     let AND = [];
@@ -1116,6 +1117,7 @@ export const getCustomer = async (req, res, next) => {
     if (Location) AND.push({ Location: { contains: Location.trim() } });
     if (SubLocation) AND.push({ SubLocation: { contains: SubLocation.trim() } });
     if (ContactNumber) AND.push({ ContactNumber: { contains: ContactNumber.trim() } });
+    if (CountryCode) AND.push({ CountryCode: { equals: CountryCode.trim() } });
     if (ReferenceId) AND.push({ ReferenceId: { contains: ReferenceId.trim() } });
     if (Price) AND.push({ Price: { contains: Price.trim() } });
 
@@ -1587,6 +1589,8 @@ export const createCustomer = async (req, res, next) => {
         CustomerImage: JSON.stringify(CustomerImage),
         SitePlan: JSON.stringify(SitePlan),
         CustomerFields: customerFieldsData,
+        ContactNumber: cleanNationalNumber(body.ContactNumber), // strips any stray '+'/spaces if present
+        CountryCode: body.CountryCode || DEFAULT_COUNTRY_CODE,
         AssignTo:
           admin.role === "user"
             ? {
@@ -1644,6 +1648,15 @@ export const updateCustomer = async (req, res, next) => {
     const { id } = req.params;
 
     let updateData = { ...req.body };
+
+    if (updateData.ContactNumber !== undefined) {
+      updateData.ContactNumber = cleanNationalNumber(updateData.ContactNumber);
+    }
+
+    if (updateData.CountryCode !== undefined) {
+      const cc = String(updateData.CountryCode).trim();
+      updateData.CountryCode = cc || DEFAULT_COUNTRY_CODE;
+    }
 
     // ✅ BOOLEAN PARSER ADDED
     const toBoolean = (val) => {

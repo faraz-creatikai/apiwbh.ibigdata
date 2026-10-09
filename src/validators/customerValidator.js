@@ -25,9 +25,9 @@ export const createCustomerValidator = [
 
   body("ContactNumber")
     .notEmpty()
-    .withMessage("ContactNumber is required")
-    .matches(/^[0-9]{10}$/)
-    .withMessage("ContactNumber must be a valid 10-digit number"),
+    .withMessage("ContactNumber is required"),
+   /*  .matches(/^[0-9]{10}$/)
+    .withMessage("ContactNumber must be a valid 10-digit number"), */
 
   body("City").optional().isString().withMessage("City must be a string"),
 

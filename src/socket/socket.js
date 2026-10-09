@@ -19,7 +19,7 @@ export const initSocket = async (server) => {
     pingTimeout: 20000,
   });
 
-    // 2. add these two lines right after io is created
+  // 2. add these two lines right after io is created
   await closeStaleSessions();   // clean sessions left open by a restart
   startPresenceHeartbeat();
 
@@ -29,7 +29,7 @@ export const initSocket = async (server) => {
       socket.join(`admin:${adminId}`);
     }
 
-     registerPresence(io, socket);
+    registerPresence(io, socket);
 
     // ─── WHATSAPP VIEWER TRACKING ──────────────────────────────────────
 

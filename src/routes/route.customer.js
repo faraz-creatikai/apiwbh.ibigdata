@@ -50,13 +50,13 @@ import { isCityAdminOrAbove, protectRoute } from "../middlewares/auth.js";
 import { uploadExcel } from "../middlewares/uploadExcel.js";
 import {
   importCustomers,
-  readCustomerHeaders, // ✅ <-- Import new header reader
+  readCustomerHeaders, //<-- Import new header reader
 } from "../controllers/customerImportController.js";
 
 
 const customerRoutes = express.Router();
 
-// ✅ Protected Routes
+//Protected Routes
 customerRoutes.use(protectRoute);
 
 
@@ -72,7 +72,7 @@ customerRoutes.get("/dashboard/radar-chart-stats",getRadarChartStats);
 
 //customer routes
 
-// 🧭 Base CRUD Routes
+//Base CRUD Routes
 customerRoutes.get("/today", getTodayCustomers);
 customerRoutes.get("/getcalllogs",getCallLogs);
 customerRoutes.get("/get-call-report",getCallReport);
@@ -128,7 +128,7 @@ customerRoutes.delete("/", deleteAllCustomers);
 
 customerRoutes.get("/favourites/all", getFavouriteCustomers);
 
-// 🧩 1️⃣ New API → Read headers from uploaded Excel
+//New API → Read headers from uploaded Excel
 customerRoutes.post(
   "/import/headers",
   protectRoute,
@@ -137,7 +137,7 @@ customerRoutes.post(
   readCustomerHeaders
 );
 
-// 🧩 2️⃣ Existing API → Import customers (with optional fieldMapping)
+//Existing API → Import customers (with optional fieldMapping)
 customerRoutes.post(
   "/import",
   protectRoute,
@@ -167,7 +167,4 @@ customerRoutes.get("/:id", getCustomerById);
 
 
 export default customerRoutes;
-
-
-
 

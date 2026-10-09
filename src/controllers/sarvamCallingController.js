@@ -6,7 +6,7 @@ import { getActiveSarvamConfig } from '../utils/callingAgentConfig.js';
 
 
 const CUSTOMER_SELECT = {
-    id: true, customerName: true, ContactNumber: true, Campaign: true, CustomerType: true,
+    id: true, customerName: true, ContactNumber: true, CountryCode: true, Campaign: true, CustomerType: true,
     CustomerSubType: true, LeadType: true, LeadTemperature: true, City: true, Location: true,
     SubLocation: true, Area: true, Price: true, Facillities: true, Description: true,
     Other: true, DealClosed: true,
@@ -68,7 +68,7 @@ export const triggerSarvamCall = async (req, res, next) => {
         // 4. Customer phone number (checked before any AI call)
         // ---------------------------------------------------------
 
-        const userPhoneNumber = String(customer.ContactNumber || "").trim();
+        const userPhoneNumber = String(customer.CountryCode + customer.ContactNumber || "").trim();
 
         if (!userPhoneNumber) {
             return res.status(400).json({
@@ -78,7 +78,7 @@ export const triggerSarvamCall = async (req, res, next) => {
 
         const formattedPhone = userPhoneNumber.startsWith("+")
             ? userPhoneNumber
-            : `+91${userPhoneNumber}`;
+            : `+${userPhoneNumber}`;
 
         // ---------------------------------------------------------
         // 5. Get latest followups (newest first, max 5)
@@ -119,7 +119,8 @@ export const triggerSarvamCall = async (req, res, next) => {
             `/workspaces/${cfg.workspaceId}` +
             `/outbounds`;
 
-        console.log("Sarvam instant outbound URL:", url);
+       // console.log("Sarvam instant outbound URL:", url);
+       console.log(" sarvam transfer number : ", cfg.agentTansferNumber )
 
         // ---------------------------------------------------------
         // 8. Create outbound call
