@@ -69,9 +69,9 @@ app.use(express.json());
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // Routes
-app.use("/api/brand",brandRoutes);
-app.use("/api/sarvam",sarvamCallingRoutes);
-app.use("/api/user",requestUserRoutes);
+app.use("/api/brand", brandRoutes);
+app.use("/api/sarvam", sarvamCallingRoutes);
+app.use("/api/user", requestUserRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/mas/customerFields", customerFieldsRoutes);
 app.use("/api/mas/cam", campaignRoutes);
@@ -106,19 +106,19 @@ app.use("/api/cus/followup", followupRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/con/follow/add", confollowaddRoutes);
 app.use("/api/v1/messages", messageRoutes);
-app.use("/api/customerfieldlabels",customerFieldLabelRoutes)
-app.use("/api/aiagent",aiAgentRoutes)
+app.use("/api/customerfieldlabels", customerFieldLabelRoutes)
+app.use("/api/aiagent", aiAgentRoutes)
 app.use("/api/airteliq", airteliqCallRoutes);
 app.use("/api/social-content", socialContentRoutes);
-app.use("/api/social-auth",socialAuthRoutes);
+app.use("/api/social-auth", socialAuthRoutes);
 app.use("/api/property", propertyRoutes);
 app.use("/api/notifications", notificationRoutes);
-app.use("/api/salesscript",salesScriptRoutes);
-app.use("/api/tabbly",tabblyRoutes);
+app.use("/api/salesscript", salesScriptRoutes);
+app.use("/api/tabbly", tabblyRoutes);
 app.use("/api/video-project", videoProjectRoutes);
 app.use("/api/activity", activityRoutes);
 
-app.use("/api/mcp",mcpRoutes);
+app.use("/api/mcp", mcpRoutes);
 
 app.use(errorHandler);
 
