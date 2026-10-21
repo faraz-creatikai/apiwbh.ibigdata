@@ -16,4 +16,6 @@ export const ALLOWED_ORIGINS = [
   "https://estateai.in",
 ];
 
-export const clientUrl = "https://consult.ibigdata.in";
+export const clientUrl = "https://edu.ibigdata.in";
+
+
