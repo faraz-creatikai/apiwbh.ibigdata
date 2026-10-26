@@ -44,21 +44,21 @@ const COUNTRY_CODES = [
   { code: "977", lengths: [10] },
   { code: "880", lengths: [10] },
   { code: "234", lengths: [10] },
-  { code: "94",  lengths: [9] },
-  { code: "92",  lengths: [10] },
-  { code: "91",  lengths: [10] },
-  { code: "86",  lengths: [11] },
-  { code: "65",  lengths: [8] },
-  { code: "63",  lengths: [10] },
-  { code: "62",  lengths: [9, 10, 11] },
-  { code: "61",  lengths: [9] },
-  { code: "60",  lengths: [9, 10] },
-  { code: "49",  lengths: [10, 11] },
-  { code: "44",  lengths: [10] },
-  { code: "33",  lengths: [9] },
-  { code: "27",  lengths: [9] },
-  { code: "20",  lengths: [10] },
-  { code: "1",   lengths: [10] },
+  { code: "94", lengths: [9] },
+  { code: "92", lengths: [10] },
+  { code: "91", lengths: [10] },
+  { code: "86", lengths: [11] },
+  { code: "65", lengths: [8] },
+  { code: "63", lengths: [10] },
+  { code: "62", lengths: [9, 10, 11] },
+  { code: "61", lengths: [9] },
+  { code: "60", lengths: [9, 10] },
+  { code: "49", lengths: [10, 11] },
+  { code: "44", lengths: [10] },
+  { code: "33", lengths: [9] },
+  { code: "27", lengths: [9] },
+  { code: "20", lengths: [10] },
+  { code: "1", lengths: [10] },
 ].sort((a, b) => b.code.length - a.code.length); // longest code checked first
 
 const DEFAULT_COUNTRY_CODE = "91"; // assume domestic when no code is present
@@ -76,7 +76,7 @@ const splitCountryCode = (digits, hasExplicitCountryCode = false) => {
   for (const { code, lengths } of COUNTRY_CODES) {
     if (digits.startsWith(code)) {
       const rest = digits.slice(code.length);
-      
+
       let cleanedRest = rest;
       if (cleanedRest.startsWith("0")) {
         cleanedRest = cleanedRest.replace(/^0+/, "");
@@ -99,7 +99,7 @@ const splitCountryCode = (digits, hasExplicitCountryCode = false) => {
   // 3. UNKNOWN LONG NUMBER FALLBACK
   // If it's a very long number with an unrecognized country code, grab the last 10 digits.
   if (digits.length > MAX_LOCAL_LEN) {
-    const guessLen = 10; 
+    const guessLen = 10;
     const number = digits.slice(-guessLen);
     const countryCode = digits.slice(0, digits.length - guessLen) || DEFAULT_COUNTRY_CODE;
     return { countryCode, number };
@@ -116,20 +116,20 @@ const isAmbiguousLength = () => false;
 
 const cleanNumber = (num) => {
   if (!num) return { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
-  
+
   const strNum = String(num).trim();
-  
+
   // Check for the '+' sign or '00' international prefix before we strip characters
-  const hasPlus = strNum.startsWith("+") || strNum.startsWith("00"); 
-  
+  const hasPlus = strNum.startsWith("+") || strNum.startsWith("00");
+
   // Remove ALL non-digit characters (strips spaces, -, _, (), alphabets, and symbols)
   let digits = strNum.replace(/\D/g, "");
-  
+
   // If they used '00' for international dialling, strip it so the country code matches perfectly
   if (strNum.startsWith("00")) {
     digits = digits.substring(2);
   }
-  
+
   // If it's a domestic number starting with 0 (e.g. 08787349821), strip the zero
   // ONLY if stripping it results in a valid local length number.
   if (!hasPlus && digits.startsWith("0")) {
@@ -138,7 +138,7 @@ const cleanNumber = (num) => {
       digits = withoutZero;
     }
   }
-  
+
   // Pass the boolean flag so the splitter knows to look for a country code
   return splitCountryCode(digits, hasPlus);
 };
@@ -238,13 +238,13 @@ export const importCustomers = async (req, res, next) => {
     if (!req.file) return next(new ApiError(400, "No file uploaded"));
 
     const workbook = xlsx.readFile(req.file.path, {
-  cellDates: true,
-});
+      cellDates: true,
+    });
     const sheetName = workbook.SheetNames[0];
     const sheet = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], {
-  raw: false,
-  dateNF: "dd-mm-yyyy",
-});
+      raw: false,
+      dateNF: "dd-mm-yyyy",
+    });
 
     if (!sheet.length) return next(new ApiError(400, "Empty Excel file"));
 
@@ -268,7 +268,7 @@ export const importCustomers = async (req, res, next) => {
     // ----------------------------
     const processed = normalized.map((r) => {
       const cleanedContacts = extractNumbers(r.ContactNumber);
-       const { countryCode, number: firstPhone } = extractNumbers(r.ContactNumber);
+      const { countryCode, number: firstPhone } = extractNumbers(r.ContactNumber);
 
       const email = safeTrim(r.Email) || null;
 
@@ -365,7 +365,6 @@ export const importCustomers = async (req, res, next) => {
         URL: safeTrim(r.URL) || "",
         Other: safeTrim(r.Other) || "",
         ReferenceId: safeTrim(r.ReferenceId) || ""
-
       };
     });
 
@@ -793,19 +792,19 @@ export const importCustomers = async (req, res, next) => {
 
         imported.push({ ...row, id: created.id });
 
-         //ACTIVITY LOG TRIGGER
+        //ACTIVITY LOG TRIGGER
         logActivity({
-          req, 
+          req,
           admin,
           action: "import", // Uses the new enum value
           entity: "customer",
           entityId: created.id,
           entityName: created.customerName,
           customerId: created.id,
-          meta: { 
-            method: "excel_bulk_import", 
-            campaign: created.Campaign, 
-            city: created.City 
+          meta: {
+            method: "excel_bulk_import",
+            campaign: created.Campaign,
+            city: created.City
           },
         });
 
