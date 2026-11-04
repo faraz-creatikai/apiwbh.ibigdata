@@ -24,7 +24,7 @@ export const getCampaign = async (req, res, next) => {
     const now = Date.now();
 
     // 1. Query-Aware Cache Key
-    const cacheKey = JSON.stringify({ keyword, limit });
+/*     const cacheKey = JSON.stringify({ keyword, limit });
 
     if (campaignCache.has(cacheKey)) {
       const cached = campaignCache.get(cacheKey);
@@ -33,7 +33,7 @@ export const getCampaign = async (req, res, next) => {
       } else {
         campaignCache.delete(cacheKey);
       }
-    }
+    } */
 
     // 2. Build Query
     let where = {};
@@ -51,8 +51,8 @@ export const getCampaign = async (req, res, next) => {
     const transformedCampaigns = await Promise.all(campaigns.map(transformCampaign));
 
     // 4. Update Cache & Basic Garbage Collection (Cap at 100 queries)
-    campaignCache.set(cacheKey, { data: transformedCampaigns, expiry: now + CACHE_TTL_MS });
-    if (campaignCache.size > 100) campaignCache.delete(campaignCache.keys().next().value);
+  /*   campaignCache.set(cacheKey, { data: transformedCampaigns, expiry: now + CACHE_TTL_MS });
+    if (campaignCache.size > 100) campaignCache.delete(campaignCache.keys().next().value); */
 
     return res.status(200).json(transformedCampaigns);
   } catch (error) {

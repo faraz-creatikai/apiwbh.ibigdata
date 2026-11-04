@@ -22,7 +22,7 @@ export const getCity = async (req, res, next) => {
     const now = Date.now();
     
     // 1. Query-Aware Cache Key
-    const cacheKey = JSON.stringify({ keyword, limit });
+    /* const cacheKey = JSON.stringify({ keyword, limit });
 
     if (cityCache.has(cacheKey)) {
       const cached = cityCache.get(cacheKey);
@@ -31,7 +31,7 @@ export const getCity = async (req, res, next) => {
       } else {
         cityCache.delete(cacheKey);
       }
-    }
+    } */
 
     // 2. Build Query
     let where = {};
@@ -49,8 +49,8 @@ export const getCity = async (req, res, next) => {
     const transformedCities = await Promise.all(cities.map(transformCity));
 
     // 4. Update Cache & Basic Garbage Collection
-    cityCache.set(cacheKey, { data: transformedCities, expiry: now + CACHE_TTL_MS });
-    if (cityCache.size > 100) cityCache.delete(cityCache.keys().next().value);
+   /*  cityCache.set(cacheKey, { data: transformedCities, expiry: now + CACHE_TTL_MS });
+    if (cityCache.size > 100) cityCache.delete(cityCache.keys().next().value); */
 
     return res.status(200).json(transformedCities);
   } catch (error) {

@@ -8,7 +8,6 @@ import { startCallLogSync, syncCallLogsInternal } from "./jobs/syncCallLogs.js";
 import { initFacebookCron, initInstagramCron } from "./jobs/instagramScheduler.js";
 import { initSocket } from "./socket/socket.js";
 import { deleteOldNotifications, initFollowupNotificationCron } from "./jobs/notification/notificationEvents.js";
-import { initWhatsApp } from "./config/baileys.js";
 import { sweepOldUploads } from "./jobs/cleanupUploads.js";
 
 
@@ -26,7 +25,6 @@ server.listen(PORT, async () => {
   initInstagramCron();
   initFacebookCron();
   initFollowupNotificationCron();
- // await initWhatsApp();
 
   setInterval(async () => {
     try { await deleteOldNotifications(); }

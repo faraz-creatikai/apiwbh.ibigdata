@@ -34,18 +34,18 @@ export const getAIAgents = async (req, res, next) => {
         const { keyword, limit, type, campaign } = req.query;
 
         // 1. Generate a unique cache key based on the exact query parameters
-        const cacheKey = JSON.stringify({ keyword, limit, type, campaign });
-        const now = Date.now();
-
-        // 2. Serve from cache instantly if valid (0ms response time)
-        if (agentsCache.has(cacheKey)) {
-            const cached = agentsCache.get(cacheKey);
-            if (cached.expiry > now) {
-                return res.status(200).json(cached.data);
-            } else {
-                agentsCache.delete(cacheKey); // Clear stale data
-            }
-        }
+        /*  const cacheKey = JSON.stringify({ keyword, limit, type, campaign });
+         const now = Date.now();
+ 
+         // 2. Serve from cache instantly if valid (0ms response time)
+         if (agentsCache.has(cacheKey)) {
+             const cached = agentsCache.get(cacheKey);
+             if (cached.expiry > now) {
+                 return res.status(200).json(cached.data);
+             } else {
+                 agentsCache.delete(cacheKey); // Clear stale data
+             }
+         } */
 
         // 3. Build where clause
         const where = {};
@@ -58,7 +58,7 @@ export const getAIAgents = async (req, res, next) => {
             where,
             orderBy: { createdAt: "desc" },
             // Spreads the limit dynamically. If no limit is passed, it fetches everything.
-            ...(limit && { take: Number(limit) }), 
+            ...(limit && { take: Number(limit) }),
             include: {
                 AssignTo: {
                     select: { id: true, name: true, email: true, role: true },
@@ -74,16 +74,16 @@ export const getAIAgents = async (req, res, next) => {
         );
 
         // 6. Save to cache
-        agentsCache.set(cacheKey, {
-            data: transformedAgents,
-            expiry: now + CACHE_TTL_MS,
-        });
+        /*       agentsCache.set(cacheKey, {
+                  data: transformedAgents,
+                  expiry: now + CACHE_TTL_MS,
+              }); */
 
         // Basic Garbage Collection to prevent RAM bloat
-        if (agentsCache.size > 200) {
-            const firstKey = agentsCache.keys().next().value;
-            agentsCache.delete(firstKey);
-        }
+        /*     if (agentsCache.size > 200) {
+                const firstKey = agentsCache.keys().next().value;
+                agentsCache.delete(firstKey);
+            } */
 
         return res.status(200).json(transformedAgents);
     } catch (error) {
@@ -97,7 +97,7 @@ export const getAIAgentById = async (req, res, next) => {
             where: { id: req.params.id },
             include: {
                 AssignTo: {
-                    select: { id: true, name: true, email: true, role : true },
+                    select: { id: true, name: true, email: true, role: true },
                 },
             },
         });
@@ -312,38 +312,38 @@ export const runWebhookAgent = async (req, res, next) => {
 
 
 export const compareProductPrice = async (req, res, next) => {
-  try {
-    const productName = String(req.body.product_name || req.body.query || "").trim();
+    try {
+        const productName = String(req.body.product_name || req.body.query || "").trim();
 
-    if (!productName) {
-      return next(new ApiError(400, "Please enter a product name."));
+        if (!productName) {
+            return next(new ApiError(400, "Please enter a product name."));
+        }
+
+        // Call the newly converted Node service
+        const { products, error } = await getAggregatedProducts(productName);
+
+        if (!products || products.length === 0) {
+            const msg = error ? `Search failed: ${error}` : "No specific product pages found. Try adding the model or variant.";
+            return next(new ApiError(404, msg));
+        }
+
+        // Hit your dynamic Prisma AI context
+        const summary = await productPriceCompareAgent(productName, products);
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                product_name: productName,
+                cheapest: products[0],
+                products: products,
+                all_results: products,
+                summary: summary,
+                ai_summary: summary,
+                total_results: products.length
+            }
+        });
+
+    } catch (error) {
+        return next(new ApiError(500, error.message));
     }
-
-    // Call the newly converted Node service
-    const { products, error } = await getAggregatedProducts(productName);
-
-    if (!products || products.length === 0) {
-      const msg = error ? `Search failed: ${error}` : "No specific product pages found. Try adding the model or variant.";
-      return next(new ApiError(404, msg));
-    }
-
-    // Hit your dynamic Prisma AI context
-    const summary = await productPriceCompareAgent(productName, products);
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        product_name: productName,
-        cheapest: products[0],
-        products: products,
-        all_results: products,
-        summary: summary,
-        ai_summary: summary,
-        total_results: products.length
-      }
-    });
-
-  } catch (error) {
-    return next(new ApiError(500, error.message));
-  }
 };

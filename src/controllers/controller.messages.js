@@ -5,6 +5,8 @@ import ApiError from "../utils/ApiError.js";
 import { makeCall } from "../config/exotel.js";
 import fs from "fs";
 import { EmailCampaignAgent } from "../ai/agent.js";
+import { toWaNumber } from "../utils/phone.js";
+import { getCustomerAccessFilter } from "./controller.customer.js";
 
 const prisma = new PrismaClient();
 
@@ -47,17 +49,29 @@ export function mergeAiContentIntoTemplate(templateHtml, aiBody, customer) {
 const fetchTargetCustomers = async ({
   customerIds = [],
   sendToAll = false,
+  admin,
 }) => {
+  // same rules as getCustomer: what this admin may see is what this admin may message
+  const access = await getCustomerAccessFilter(admin);
+
   if (sendToAll) {
-    return prisma.customer.findMany();
+    return prisma.customer.findMany({ where: access });
   }
   if (!Array.isArray(customerIds) || customerIds.length === 0) return [];
 
   return prisma.customer.findMany({
-    where: {
-      id: { in: customerIds },
-    },
+    where: { AND: [access, { id: { in: customerIds } }] },
   });
+};
+
+// Decide what a template really is, from its data instead of trusting whatsappMediaType
+const resolveMediaType = (t) => {
+  const mt = t.whatsappMediaType;
+  const hasFile = Array.isArray(t.whatsappImage) && t.whatsappImage.length > 0;
+  if (["image", "video", "document"].includes(mt) && hasFile) return mt;
+  if (t.whatsappPoll?.name) return "poll";
+  if (t.whatsappLocation?.lat != null && t.whatsappLocation?.lng != null) return "location";
+  return "text";
 };
 
 // ===================================================================
@@ -75,7 +89,7 @@ export const sendEmailByTemplate = async (req, res, next) => {
     if (template.type !== "email")
       return next(new ApiError(400, "Template type must be 'email'"));
 
-    const customers = await fetchTargetCustomers({ customerIds, sendToAll });
+    const customers = await fetchTargetCustomers({ customerIds, sendToAll, admin: req.admin });
     if (!customers.length) return next(new ApiError(404, "No customers found"));
 
     const results = [];
@@ -94,7 +108,7 @@ export const sendEmailByTemplate = async (req, res, next) => {
         const subject = replacePlaceholders(template.subject, c);
         const html = replacePlaceholders(template.body, c);
 
-        const info = await sendEmail(c.Email, subject, html);
+        const info = await sendEmail(c.Email, subject, html, { adminId: req.admin.id });
 
         results.push({
           id: c.id,
@@ -137,7 +151,7 @@ export const sendWhatsAppByTemplate = async (req, res, next) => {
     if (template.type !== "whatsapp")
       return next(new ApiError(400, "Template type must be 'whatsapp'"));
 
-    const customers = await fetchTargetCustomers({ customerIds, sendToAll });
+    const customers = await fetchTargetCustomers({ customerIds, sendToAll, admin: req.admin });
     if (!customers.length) return next(new ApiError(404, "No customers found"));
 
     const results = [];
@@ -154,9 +168,10 @@ export const sendWhatsAppByTemplate = async (req, res, next) => {
           continue;
         }
 
+        const cc = c.CountryCode || process.env.DEFAULT_COUNTRY_CODE || "91";
         const formattedPhone = phone.startsWith("+")
           ? phone
-          : `${process.env.DEFAULT_COUNTRY_CODE || "+91"}${phone}`;
+          : `+${cc.replace(/\+/g, '')}${phone}`;
 
         const message = replacePlaceholders(template.body, c);
 
@@ -214,7 +229,7 @@ export const sendBaileysWhatsAppByTemplate = async (req, res, next) => {
     if (template.type !== "whatsapp")
       return next(new ApiError(400, "Template type must be 'whatsapp'"));
 
-    const customers = await fetchTargetCustomers({ customerIds, sendToAll });
+    const customers = await fetchTargetCustomers({ customerIds, sendToAll, admin: req.admin });
     if (!customers.length) return next(new ApiError(404, "No customers found"));
 
     const results = [];
@@ -232,28 +247,21 @@ export const sendBaileysWhatsAppByTemplate = async (req, res, next) => {
           continue;
         }
 
-        // Format for Baileys: Must not contain '+'
-        let cleanPhone = phone.replace("+", "");
-
-        // If it's just a 10 digit number, prepend the country code (without +)
-        const defaultCode = (process.env.DEFAULT_COUNTRY_CODE || "91").replace("+", "");
-        const formattedPhone = cleanPhone.length === 10
-          ? `${defaultCode}${cleanPhone}`
-          : cleanPhone;
+        const formattedPhone = toWaNumber(phone, c.CountryCode);
 
         const message = replacePlaceholders(template.body, c);
         const imageUrl = template.whatsappImage?.[0] || null;
 
 
         const extra = {
-          mediaType: template.whatsappMediaType || undefined,
+          mediaType: resolveMediaType(template),
           fileName: template.whatsappFileName || undefined,
           linkPreview: template.whatsappLinkPreview || undefined,
           location: template.whatsappLocation || undefined,
           poll: template.whatsappPoll || undefined,
         };
 
-        const result = await sendBaileysWhatsApp(formattedPhone, message, imageUrl, extra);
+        const result = await sendBaileysWhatsApp(req.admin.id, formattedPhone, message, imageUrl, extra);
 
 
 
@@ -272,19 +280,20 @@ export const sendBaileysWhatsAppByTemplate = async (req, res, next) => {
         }
 
       } catch (err) {
-        results.push({
-          id: c.id,
-          name: c.customerName,
-          status: "failed",
-          error: err.message,
-        });
+        results.push({ id: c.id, name: c.customerName, status: "failed", error: err.message });
+        // no point trying every other customer if the account isn't connected
+        if (/failed to (stabilize\/)?connect|not linked/i.test(err.message)) break;
       }
     }
 
+    const sent = results.filter((r) => r.status === "sent").length;
     res.status(200).json({
-      success: true,
-      sent: results.filter((r) => r.status === "sent").length,
+      success: sent > 0,
+      sent,
       results,
+      ...(sent === 0 && {
+        message: results.find((r) => r.status === "failed")?.error || "No customer had a valid phone number",
+      }),
     });
   } catch (err) {
     next(new ApiError(500, err.message));
@@ -376,7 +385,7 @@ export const sendBaileysWhatsAppProperties = async (req, res, next) => {
     }
 
     // 2. Resolve target customers
-    const customers = await fetchTargetCustomers({ customerIds, sendToAll });
+    const customers = await fetchTargetCustomers({ customerIds, sendToAll, admin: req.admin });
     if (!customers.length) return next(new ApiError(404, "No destination customers found"));
 
     const results = [];
@@ -396,11 +405,7 @@ export const sendBaileysWhatsAppProperties = async (req, res, next) => {
         }
 
         // Format for Baileys compatibility
-        let cleanPhone = phone.replace("+", "");
-        const defaultCode = (process.env.DEFAULT_COUNTRY_CODE || "91").replace("+", "");
-        const formattedPhone = cleanPhone.length === 10
-          ? `${defaultCode}${cleanPhone}`
-          : cleanPhone;
+        const formattedPhone = toWaNumber(phone, c.CountryCode);
 
         // Loop through each property in the payload list separately
         for (let j = 0; j < properties.length; j++) {
@@ -425,17 +430,17 @@ export const sendBaileysWhatsAppProperties = async (req, res, next) => {
           // Case A: Property has at least one image - Send text tied to the primary hero image
           if (firstImage) {
             const extra = { mediaType: "image", humanize: j === 0 }; // Only show typing state for the first property block
-            await sendBaileysWhatsApp(formattedPhone, messageBody, firstImage, extra);
+            await sendBaileysWhatsApp(req.admin.id, formattedPhone, messageBody, firstImage, extra);
 
             // Instantly pipe out any extra property photos or site plans as separate sequential payloads
             for (const mediaUrl of extraMediaUrls) {
               await delay(400); // Small procedural gap to keep deliveries in chronological block order
-              await sendBaileysWhatsApp(formattedPhone, "", mediaUrl, { mediaType: "image", humanize: false });
+              await sendBaileysWhatsApp(req.admin.id, formattedPhone, "", mediaUrl, { mediaType: "image", humanize: false });
             }
           } else {
             // Case B: Pure text layout
             const extra = { mediaType: "text", humanize: j === 0 };
-            await sendBaileysWhatsApp(formattedPhone, messageBody, null, extra);
+            await sendBaileysWhatsApp(req.admin.id, formattedPhone, messageBody, null, extra);
           }
 
           // Small delay between sending different property listings to the same customer
@@ -457,19 +462,20 @@ export const sendBaileysWhatsAppProperties = async (req, res, next) => {
         }
 
       } catch (err) {
-        results.push({
-          id: c.id,
-          name: c.customerName,
-          status: "failed",
-          error: err.message,
-        });
+        results.push({ id: c.id, name: c.customerName, status: "failed", error: err.message });
+        // no point trying every other customer if the account isn't connected
+        if (/failed to (stabilize\/)?connect|not linked/i.test(err.message)) break;
       }
     }
 
-    return res.status(200).json({
-      success: true,
-      sent: results.filter((r) => r.status === "sent").length,
+    const sent = results.filter((r) => r.status === "sent").length;
+    res.status(200).json({
+      success: sent > 0,
+      sent,
       results,
+      ...(sent === 0 && {
+        message: results.find((r) => r.status === "failed")?.error || "No customer had a valid phone number",
+      }),
     });
   } catch (err) {
     next(new ApiError(500, err.message));
@@ -494,7 +500,7 @@ export const sendDirectWhatsAppMessage = async (req, res, next) => {
       fileBuffer = fs.readFileSync(file.path);
     }
 
-    const customers = await fetchTargetCustomers({ customerIds, sendToAll: sendToAll === "true" });
+    const customers = await fetchTargetCustomers({ customerIds, sendToAll: sendToAll === "true", admin: req.admin });
     if (!customers.length) return next(new ApiError(404, "No customers found"));
 
     const results = [];
@@ -508,10 +514,7 @@ export const sendDirectWhatsAppMessage = async (req, res, next) => {
           continue;
         }
 
-        let cleanPhone = phone.replace("+", "");
-        const defaultCode = (process.env.DEFAULT_COUNTRY_CODE || "91").replace("+", "");
-        const formattedPhone = cleanPhone.length === 10 ? `${defaultCode}${cleanPhone}` : cleanPhone;
-
+        const formattedPhone = toWaNumber(phone, c.CountryCode);
         const extra = {
           mediaType,
           location,
@@ -523,6 +526,7 @@ export const sendDirectWhatsAppMessage = async (req, res, next) => {
 
         // 👇 2. PASS THE CONVERTED BUFFER
         const result = await sendBaileysWhatsAppDirect(
+          req.admin.id,
           formattedPhone,
           message,
           fileBuffer,
@@ -537,6 +541,7 @@ export const sendDirectWhatsAppMessage = async (req, res, next) => {
 
       } catch (err) {
         results.push({ id: c.id, status: "failed", error: err.message });
+        if (/failed to (stabilize\/)?connect|not linked/i.test(err.message)) break;
       }
     }
 
@@ -545,10 +550,14 @@ export const sendDirectWhatsAppMessage = async (req, res, next) => {
       fs.unlinkSync(file.path);
     }
 
+    const sent = results.filter((r) => r.status === "sent").length;
     res.status(200).json({
-      success: true,
-      sent: results.filter((r) => r.status === "sent").length,
+      success: sent > 0,
+      sent,
       results,
+      ...(sent === 0 && {
+        message: results.find((r) => r.status === "failed")?.error || "No customer had a valid phone number",
+      }),
     });
   } catch (err) {
     next(new ApiError(500, err.message));
@@ -632,9 +641,10 @@ export const sendWhatsAppMessage = async (req, res, next) => {
           continue;
         }
 
+        const cc = c.CountryCode || process.env.DEFAULT_COUNTRY_CODE || "91";
         const formattedPhone = phone.startsWith("+")
           ? phone
-          : `${process.env.DEFAULT_COUNTRY_CODE || "91"}${phone}`;
+          : `${cc.replace(/\+/g, '')}${phone}`;
 
         // Replace placeholders
         const message = replacePlaceholders(template.body, c);
@@ -767,7 +777,7 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
       return next(new ApiError(400, "Either userPrompt or Subject & Body is required"));
     }
 
-    const customers = await fetchTargetCustomers({ customerIds, sendToAll });
+    const customers = await fetchTargetCustomers({ customerIds, sendToAll, admin: req.admin });
     if (!customers.length) return next(new ApiError(404, "No customers found"));
 
     const results = [];
@@ -809,7 +819,7 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
           body = replacePlaceholders(Body, c);
         }
 
-        const info = await sendEmail(c.Email, subject, body);
+        const info = await sendEmail(c.Email, subject, body, { adminId: req.admin.id });
         results.push({ id: c.id, email: c.Email, status: "sent", metadata, workSummary, info: info.messageId || info.response });
       } catch (err) {
         results.push({ id: c.id, name: c.customerName, status: "failed", error: err.message });

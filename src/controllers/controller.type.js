@@ -34,14 +34,14 @@ export const getType = async (req, res, next) => {
     const now = Date.now();
 
     // 1. Query-Aware Cache Key
-    const cacheKey = JSON.stringify({ keyword, limit, campaignId });
+/*     const cacheKey = JSON.stringify({ keyword, limit, campaignId });
 
     if (typeCache.has(cacheKey)) {
       const cached = typeCache.get(cacheKey);
       if (cached.expiry > now) return res.status(200).json(cached.data);
       typeCache.delete(cacheKey);
     }
-
+ */
     // 2. Build Query
     let where = {};
     if (campaignId) where.campaignId = campaignId;
@@ -62,8 +62,8 @@ export const getType = async (req, res, next) => {
     const transformedTypes = await Promise.all(types.map(transformType));
 
     // 4. Update Cache
-    typeCache.set(cacheKey, { data: transformedTypes, expiry: now + CACHE_TTL_MS });
-    if (typeCache.size > 100) typeCache.delete(typeCache.keys().next().value);
+    /* typeCache.set(cacheKey, { data: transformedTypes, expiry: now + CACHE_TTL_MS });
+    if (typeCache.size > 100) typeCache.delete(typeCache.keys().next().value); */
 
     return res.status(200).json(transformedTypes);
   } catch (error) {

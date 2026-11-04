@@ -41,13 +41,13 @@ export const getSubType = async (req, res, next) => {
     const now = Date.now();
 
     // 1. Query-Aware Cache Key
-    const cacheKey = JSON.stringify({ keyword, limit, campaignId, typeId });
+   /*  const cacheKey = JSON.stringify({ keyword, limit, campaignId, typeId });
 
     if (subTypeCache.has(cacheKey)) {
       const cached = subTypeCache.get(cacheKey);
       if (cached.expiry > now) return res.status(200).json(cached.data);
       subTypeCache.delete(cacheKey);
-    }
+    } */
 
     // 2. Build Query
     let where = {};
@@ -71,8 +71,8 @@ export const getSubType = async (req, res, next) => {
     const transformedSubTypes = await Promise.all(subtypes.map(transformSubType));
 
     // 4. Update Cache
-    subTypeCache.set(cacheKey, { data: transformedSubTypes, expiry: now + CACHE_TTL_MS });
-    if (subTypeCache.size > 100) subTypeCache.delete(subTypeCache.keys().next().value);
+   /*  subTypeCache.set(cacheKey, { data: transformedSubTypes, expiry: now + CACHE_TTL_MS });
+    if (subTypeCache.size > 100) subTypeCache.delete(subTypeCache.keys().next().value); */
 
     return res.status(200).json(transformedSubTypes);
   } catch (error) {

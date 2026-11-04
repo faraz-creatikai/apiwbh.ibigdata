@@ -75,6 +75,10 @@ model Admin {
 
   callingAgentConfigs CallingAgentConfig[]
 
+  whatsappMessages   WhatsAppMessage[]
+  whatsappMetaConfig WhatsAppMetaConfig?
+  emailConfig        AdminEmailConfig?
+
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   scheduledPosts ScheduledPost[]
@@ -132,6 +136,131 @@ model CallingAgentConfig {
   updatedAt DateTime @updatedAt
 
   @@index([isActive]) // Optimizes the database query when searching for the active agent
+}
+
+model AdminEmailConfig {
+  id      String @id @default(uuid())
+  adminId String @unique // one mailbox per admin
+  admin   Admin  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  // identity
+  email         String // mailbox address (also the "from" address)
+  fromName      String
+  provider      String // gmail | zoho | hostinger | custom | ...
+  providerLabel String
+
+  // outgoing (SMTP) — all auto-detected
+  smtpHost    String
+  smtpPort    Int
+  smtpSecure  Boolean // true = implicit TLS (465), false = STARTTLS
+  smtpUser    String
+  smtpPassEnc String  @db.Text // AES-256-GCM encrypted, never returned by the API
+
+  // optional: save a copy into the Sent folder via IMAP (auto-detected)
+  saveToSent Boolean  @default(false)
+  imapHost   String?
+  imapPort   Int?
+  imapSecure Boolean?
+  imapUser   String?
+  sentFolder String?
+
+  // health
+  isActive       Boolean   @default(true)
+  status         String    @default("connected") // connected | failed
+  lastVerifiedAt DateTime?
+  lastError      String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model WhatsAppMetaConfig {
+  id      String @id @default(uuid())
+  adminId String @unique
+  admin   Admin  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  // Meta Cloud API Credentials
+  wabaId        String? // WhatsApp Business Account ID
+  phoneNumberId String? // Phone Number ID from Meta dashboard
+  accessToken   String? @db.Text // System User or Permanent Access Token
+  displayPhone  String? // The registered phone number (e.g., "919876543210")
+
+  // Admin's selected default provider
+  activeProvider String @default("baileys") // "baileys" | "meta"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model WhatsAppMessage {
+  id       String  @id @default(uuid())
+  adminId  String
+  admin    Admin   @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  phoneKey String // last 10 digits of the customer's number
+  waId     String // WhatsApp message id
+  fromMe   Boolean
+  type     String  @default("text") // text|image|video|document|audio|location|poll|sticker
+  body     String  @default("") // add @db.Text if you're on MySQL
+  fileName String?
+  status   String  @default("sent") // sent|delivered|read
+  isRead   Boolean @default(false)
+
+  source String @default("baileys")
+
+  mediaUrl    String?
+  lat         Float?
+  lng         Float?
+  pollOptions Json?
+
+  pollSecret String?
+  pollVotes  Json?
+
+  campaignSessionId String?
+  session           WhatsAppCampaignSession? @relation(fields: [campaignSessionId], references: [id], onDelete: SetNull)
+
+  timestamp DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([adminId, waId])
+  @@index([adminId, phoneKey, timestamp])
+}
+
+model WhatsAppCampaign {
+  id         String @id @default(uuid())
+  adminId    String // Links to the Admin who created it
+  name       String
+  templateId String // References the local CRM Template ID
+  status     String @default("DRAFT") // DRAFT, ACTIVE, COMPLETED
+
+  targetIds   Json      @default("[]") // Array of selected Customer IDs
+  scheduledAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions WhatsAppCampaignSession[]
+}
+
+model WhatsAppCampaignSession {
+  id         String @id @default(uuid())
+  campaignId String
+  adminId    String
+
+  status          String @default("RUNNING") // RUNNING, COMPLETED, FAILED
+  totalRecipients Int    @default(0)
+
+  // Real-time tracking metrics updated via Webhooks
+  sent      Int @default(0)
+  delivered Int @default(0)
+  read      Int @default(0)
+  replied   Int @default(0)
+  failed    Int @default(0)
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  campaign WhatsAppCampaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  messages WhatsAppMessage[] // Ties actual delivered messages back to this session
 }
 
 model Campaign {

@@ -254,12 +254,12 @@ export const getSubLocationByCityLocation = async (req, res, next) => {
         const now = Date.now();
 
         // 1. Composite Cache Key
-        const cacheKey = `${cityId}_${locationId}`;
+       /*  const cacheKey = `${cityId}_${locationId}`;
 
         if (subLocationCache.has(cacheKey)) {
             const cached = subLocationCache.get(cacheKey);
             if (cached.expiry > now) return res.status(200).json(cached.data);
-        }
+        } */
 
         // 2. Fetch Data
         const sublocations = await prisma.subLocation.findMany({
@@ -287,7 +287,7 @@ export const getSubLocationByCityLocation = async (req, res, next) => {
         };
 
         // 6. Update Cache
-        subLocationCache.set(cacheKey, { data: payload, expiry: now + CACHE_TTL_MS });
+        /* subLocationCache.set(cacheKey, { data: payload, expiry: now + CACHE_TTL_MS }); */
 
         return res.status(200).json(payload);
     } catch (error) {

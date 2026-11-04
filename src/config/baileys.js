@@ -3,7 +3,9 @@ import { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, fetchL
 import { Boom } from '@hapi/boom';
 import { getSocket } from '../socket/socket.js';
 import fs from 'fs/promises';
+import path from 'path';
 import pino from 'pino';
+import { getStoredMessage, saveWhatsAppMessage, updateWhatsAppStatus } from '../controllers/controller.whatsappInbox.js';
 
 // Verified against Baileys' source (src/Socket/socket.ts, the `genPairQR` loop
 // that fires on the `pair-device` stanza):
@@ -16,64 +18,102 @@ import pino from 'pino';
 const FIRST_QR_TIMEOUT_MS = 60_000;
 const SUBSEQUENT_QR_TIMEOUT_MS = 20_000;
 
-let currentSocket = null;
+// Each admin gets their own auth folder: whatsapp-auth/<adminId>
+const AUTH_BASE = 'whatsapp-auth';
+const getAuthDir = (adminId) => path.join(AUTH_BASE, adminId);
 
-// ── QR state ─────────────────────────────────────────────────────────
-let latestQR = null;
-let latestQRGeneratedAt = null;
-let latestQRRefreshInterval = null; // ms this specific QR frame will live (60_000 or 20_000)
+// ── Per-admin sessions ───────────────────────────────────────────────
+// Everything that used to be a module-level variable now lives here,
+// one object per admin.
+const sessions = new Map(); // adminId -> session
 
-// ── Pairing code state ───────────────────────────────────────────────
-let latestPairingCode = null;
-let pairingCodeGeneratedAt = null;
-let connectionMethod = 'qr'; // 'qr' | 'pairing'
-let pendingPhoneNumber = null;
+const createSession = () => ({
+  currentSocket: null,
 
-let connectedUserMeta = null;
-let intentionallyPaused = false;
-let isStarting = false;
+  // QR state
+  latestQR: null,
+  latestQRGeneratedAt: null,
+  latestQRRefreshInterval: null, // ms this specific QR frame will live (60_000 or 20_000)
 
-let reconnectTimer = null;
-let socketGeneration = 0;
+  // Pairing code state
+  latestPairingCode: null,
+  pairingCodeGeneratedAt: null,
+  connectionMethod: 'qr', // 'qr' | 'pairing'
+  pendingPhoneNumber: null,
 
-const clearReconnectTimer = () => {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
+  connectedUserMeta: null,
+  intentionallyPaused: false,
+  isStarting: false,
+
+  reconnectTimer: null,
+  socketGeneration: 0,
+});
+
+const getSession = (adminId) => {
+  let s = sessions.get(adminId);
+  if (!s) {
+    s = createSession();
+    sessions.set(adminId, s);
+  }
+  return s;
+};
+
+// Events only go to the sockets of the admin who owns this WhatsApp session
+// (socket.js joins every admin socket to the `admin:<id>` room).
+const emitToAdmin = (adminId, event, payload) => {
+  const io = getSocket();
+  if (io) io.to(`admin:${adminId}`).emit(event, payload);
+};
+
+const clearReconnectTimer = (s) => {
+  if (s.reconnectTimer) {
+    clearTimeout(s.reconnectTimer);
+    s.reconnectTimer = null;
   }
 };
 
-const resetQRTiming = () => {
-  latestQR = null;
-  latestQRGeneratedAt = null;
-  latestQRRefreshInterval = null;
+const resetQRTiming = (s) => {
+  s.latestQR = null;
+  s.latestQRGeneratedAt = null;
+  s.latestQRRefreshInterval = null;
   // pairing state shares the same lifecycle as QR
-  latestPairingCode = null;
-  pairingCodeGeneratedAt = null;
+  s.latestPairingCode = null;
+  s.pairingCodeGeneratedAt = null;
 };
 
-export const initWhatsApp = async (options = {}) => {
+export const initWhatsApp = async (adminId, options = {}) => {
+  if (!adminId) throw new Error('adminId is required');
+
+  const s = getSession(adminId);
   const { method = 'qr', phoneNumber = null } = options;
 
-  if (isStarting || currentSocket) {
+  if (s.isStarting || s.currentSocket) {
     return;
   }
 
-  isStarting = true;
-  intentionallyPaused = false;
-  connectionMethod = method;
-  pendingPhoneNumber = phoneNumber;
-  clearReconnectTimer();
+  s.isStarting = true;
+  s.intentionallyPaused = false;
+  s.connectionMethod = method;
+  s.pendingPhoneNumber = phoneNumber;
+  clearReconnectTimer(s);
 
-  const myGeneration = ++socketGeneration;
-  const { version, isLatest } = await fetchLatestBaileysVersion();
-
-  const { state, saveCreds } = await useMultiFileAuthState('whatsapp-auth-folder');
+  const myGeneration = ++s.socketGeneration;
+  let version, state, saveCreds;
+  try {
+    ({ version } = await fetchLatestBaileysVersion());
+    ({ state, saveCreds } = await useMultiFileAuthState(getAuthDir(adminId)));
+  } catch (err) {
+    // Without this reset, isStarting stays true and this admin can never start again.
+    s.isStarting = false;
+    console.error(`❌ [${adminId}] WhatsApp init failed:`, err);
+    throw err;
+  }
 
   const sock = makeWASocket({
     version,
     auth: state,
     markOnlineOnConnect: false,
+    getMessage: (key) => getStoredMessage(adminId, key),
     printQRInTerminal: false,
     // Pairing-code linking validates this far more strictly than QR does.
     // A custom string works fine for QR but makes WhatsApp reject the pair with
@@ -81,17 +121,17 @@ export const initWhatsApp = async (options = {}) => {
     browser: method === 'pairing' ? Browsers.macOS('Safari') : ['Property CRM', 'Chrome', '1.0.0'],
     defaultQueryTimeoutMs: undefined,
     // NOTE: deliberately NOT setting qrTimeout — see the constants at the top.
-    logger: pino({ level: 'silent' })
+    logger: pino({ level: 'warn' })
   });
 
   let pairingRequestSent = false;
 
   const requestPairing = async () => {
-    if (pairingRequestSent || myGeneration !== socketGeneration) return;
+    if (pairingRequestSent || myGeneration !== s.socketGeneration) return;
     pairingRequestSent = true;
 
     try {
-      let cleanNumber = pendingPhoneNumber.replace(/[^0-9]/g, '');
+      let cleanNumber = s.pendingPhoneNumber.replace(/[^0-9]/g, '');
 
       // A 10-digit or 0-prefixed number produces a valid-looking code that can never link.
       if (cleanNumber.length === 10) cleanNumber = `91${cleanNumber}`;
@@ -102,27 +142,21 @@ export const initWhatsApp = async (options = {}) => {
 
       const code = await sock.requestPairingCode(cleanNumber);
 
-      if (myGeneration !== socketGeneration) return;
+      if (myGeneration !== s.socketGeneration) return;
 
-      latestPairingCode = code;
-      pairingCodeGeneratedAt = Date.now();
+      s.latestPairingCode = code;
+      s.pairingCodeGeneratedAt = Date.now();
 
-      console.log(`🔑 Pairing code generated for ${cleanNumber}: ${code}`);
+      console.log(`🔑 [${adminId}] Pairing code generated for ${cleanNumber}: ${code}`);
 
-      const io = getSocket();
-      if (io) {
-        io.emit('whatsapp:pairing_code', {
-          code,
-          generatedAt: pairingCodeGeneratedAt,
-        });
-      }
+      emitToAdmin(adminId, 'whatsapp:pairing_code', {
+        code,
+        generatedAt: s.pairingCodeGeneratedAt,
+      });
     } catch (err) {
-      console.error('❌ Failed to request pairing code:', err.message);
+      console.error(`❌ [${adminId}] Failed to request pairing code:`, err.message);
       pairingRequestSent = false; // allow the client's "resend" to try again
-      const io = getSocket();
-      if (io) {
-        io.emit('whatsapp:pairing_error', { message: err.message });
-      }
+      emitToAdmin(adminId, 'whatsapp:pairing_error', { message: err.message });
     }
   };
 
@@ -136,47 +170,44 @@ export const initWhatsApp = async (options = {}) => {
   }
 
   sock.ev.on('connection.update', async (update) => {
-    if (myGeneration !== socketGeneration) return;
+    if (myGeneration !== s.socketGeneration) return;
 
     const { connection, lastDisconnect, qr } = update;
-    const io = getSocket();
 
     // Only broadcast QR frames when we're actually in QR mode, so pairing-mode
     // sessions don't flash a QR code the UI never shows.
-    if (qr && connectionMethod !== 'pairing') {
+    if (qr && s.connectionMethod !== 'pairing') {
       const now = Date.now();
 
       // `latestQR` is null exactly when this is the first `qr` event since the
       // last reset — the same condition Baileys' own genPairQR loop uses to
       // decide "first vs subsequent" (see constants at the top).
-      const isFirstQrOfAttempt = latestQR === null;
+      const isFirstQrOfAttempt = s.latestQR === null;
       const refreshInterval = isFirstQrOfAttempt ? FIRST_QR_TIMEOUT_MS : SUBSEQUENT_QR_TIMEOUT_MS;
 
-      latestQR = qr;
-      latestQRGeneratedAt = now;
-      latestQRRefreshInterval = refreshInterval;
+      s.latestQR = qr;
+      s.latestQRGeneratedAt = now;
+      s.latestQRRefreshInterval = refreshInterval;
 
-      console.log(`📲 New QR Code generated (expires in ${refreshInterval}ms)`);
-      if (io) {
-        io.emit('whatsapp:qr', {
-          qrString: qr,
-          generatedAt: latestQRGeneratedAt,
-          refreshInterval,
-        });
-      }
+      console.log(`📲 [${adminId}] New QR Code generated (expires in ${refreshInterval}ms)`);
+      emitToAdmin(adminId, 'whatsapp:qr', {
+        qrString: qr,
+        generatedAt: s.latestQRGeneratedAt,
+        refreshInterval,
+      });
     }
 
     if (connection === 'close') {
-      resetQRTiming();
-      connectedUserMeta = null;
+      resetQRTiming(s);
+      s.connectedUserMeta = null;
 
       const error = lastDisconnect?.error;
       const statusCode = new Boom(error)?.output?.statusCode;
-      console.log(`⚠️ Connection closed. Reason code: ${statusCode} | Message: ${error?.message || 'Unknown'}`);
+      console.log(`⚠️ [${adminId}] Connection closed. Reason code: ${statusCode} | Message: ${error?.message || 'Unknown'}`);
 
-      if (intentionallyPaused) {
-        console.log("⏸️ QR loop paused. Waiting for UI to wake it up again.");
-        currentSocket = null;
+      if (s.intentionallyPaused) {
+        console.log(`⏸️ [${adminId}] QR loop paused. Waiting for UI to wake it up again.`);
+        s.currentSocket = null;
         return;
       }
 
@@ -184,9 +215,9 @@ export const initWhatsApp = async (options = {}) => {
       const isConflict = statusCode === DisconnectReason.replaced || statusCode === 409;
       const shouldReconnect = !isLoggedOut;
 
-      if (io) io.emit('whatsapp:status', { status: 'disconnected' });
+      emitToAdmin(adminId, 'whatsapp:status', { status: 'disconnected' });
 
-      currentSocket = null;
+      s.currentSocket = null;
 
       if (shouldReconnect) {
         const retryDelay = isConflict ? 5000 : 2000;
@@ -194,43 +225,43 @@ export const initWhatsApp = async (options = {}) => {
         // Preserve whichever method/number was in flight so a pairing session
         // survives Baileys' internal "restart required" reconnects instead of
         // silently falling back to QR mid-flow.
-        const resumeMethod = connectionMethod;
-        const resumePhone = pendingPhoneNumber;
+        const resumeMethod = s.connectionMethod;
+        const resumePhone = s.pendingPhoneNumber;
 
-        clearReconnectTimer();
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          if (myGeneration === socketGeneration && !currentSocket) {
-            initWhatsApp({ method: resumeMethod, phoneNumber: resumePhone });
+        clearReconnectTimer(s);
+        s.reconnectTimer = setTimeout(() => {
+          s.reconnectTimer = null;
+          if (myGeneration === s.socketGeneration && !s.currentSocket) {
+            initWhatsApp(adminId, { method: resumeMethod, phoneNumber: resumePhone });
           }
         }, retryDelay);
       } else {
-        console.log('❌ Logged out. Waiting for unpair payload to reach Meta...');
+        console.log(`❌ [${adminId}] Logged out. Waiting for unpair payload to reach Meta...`);
 
         setTimeout(async () => {
           try {
-            await fs.rm('whatsapp-auth-folder', { recursive: true, force: true });
-            console.log('🗑️ Auth folder successfully deleted.');
+            await fs.rm(getAuthDir(adminId), { recursive: true, force: true });
+            console.log(`🗑️ [${adminId}] Auth folder successfully deleted.`);
           } catch (err) {
             console.error("Error deleting folder:", err);
           }
 
           // A logout always resets us back to the default QR flow
-          connectionMethod = 'qr';
-          pendingPhoneNumber = null;
+          s.connectionMethod = 'qr';
+          s.pendingPhoneNumber = null;
 
-          clearReconnectTimer();
-          reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            if (myGeneration === socketGeneration && !currentSocket) {
-              initWhatsApp();
+          clearReconnectTimer(s);
+          s.reconnectTimer = setTimeout(() => {
+            s.reconnectTimer = null;
+            if (myGeneration === s.socketGeneration && !s.currentSocket) {
+              initWhatsApp(adminId);
             }
           }, 1000);
         }, 5000);
       }
     } else if (connection === 'open') {
-      resetQRTiming();
-      console.log('✅ WhatsApp connection opened successfully!');
+      resetQRTiming(s);
+      console.log(`✅ [${adminId}] WhatsApp connection opened successfully!`);
 
       const rawJid = sock.user?.id;
       const phone = rawJid ? rawJid.split(':')[0] : 'Unknown Number';
@@ -247,113 +278,140 @@ export const initWhatsApp = async (options = {}) => {
         }
       }
 
-      connectedUserMeta = { phone, name, imageUrl };
+      s.connectedUserMeta = { phone, name, imageUrl };
 
-      if (io) {
-        io.emit('whatsapp:status', { status: 'connected', user: connectedUserMeta });
-      }
+      emitToAdmin(adminId, 'whatsapp:status', { status: 'connected', user: s.connectedUserMeta });
     }
   });
 
   sock.ev.on('creds.update', async () => {
     await saveCreds();
 
-    if (myGeneration !== socketGeneration) return;
+    if (myGeneration !== s.socketGeneration) return;
 
-    if (connectedUserMeta) {
+    if (s.connectedUserMeta) {
       const freshName = sock.user?.name || sock.user?.notify || sock.authState?.creds?.me?.name;
-      if (freshName && freshName !== connectedUserMeta.name) {
-        connectedUserMeta = { ...connectedUserMeta, name: freshName };
-        const io = getSocket();
-        if (io) io.emit('whatsapp:status', { status: 'connected', user: connectedUserMeta });
+      if (freshName && freshName !== s.connectedUserMeta.name) {
+        s.connectedUserMeta = { ...s.connectedUserMeta, name: freshName };
+        emitToAdmin(adminId, 'whatsapp:status', { status: 'connected', user: s.connectedUserMeta });
       }
     }
   });
 
-  currentSocket = sock;
-  isStarting = false;
+  sock.ev.on('messages.upsert', ({ messages }) => {
+    if (myGeneration !== s.socketGeneration) return;
+    for (const m of messages) {
+      if (m.message?.pollUpdateMessage) console.log('🗳️ vote received for poll', m.message.pollUpdateMessage.pollCreationMessageKey?.id);
+      saveWhatsAppMessage(adminId, m, emitToAdmin, sock).catch((e) => console.error('save msg:', e.message));
+    }
+  });
+
+  sock.ev.on('messages.update', (updates) => {
+    if (myGeneration !== s.socketGeneration) return;
+    updateWhatsAppStatus(adminId, updates, emitToAdmin).catch(() => {});
+  });
+
+  s.currentSocket = sock;
+  s.isStarting = false;
 };
 
 // Dedicated entry point the route calls for pairing-code linking.
 // Tears down any idle QR-mode socket first, then restarts in pairing mode.
-export const startPairingConnection = async (phoneNumber) => {
+export const startPairingConnection = async (adminId, phoneNumber) => {
+  if (!adminId) {
+    throw new Error('adminId is required');
+  }
   if (!phoneNumber) {
     throw new Error('phoneNumber is required');
   }
 
-  if (currentSocket && !connectedUserMeta) {
-    socketGeneration++;
-    clearReconnectTimer();
-    currentSocket.end(undefined);
-    currentSocket = null;
-    isStarting = false;
+  const s = getSession(adminId);
+
+  if (s.currentSocket && !s.connectedUserMeta) {
+    s.socketGeneration++;
+    clearReconnectTimer(s);
+    s.currentSocket.end(undefined);
+    s.currentSocket = null;
+    s.isStarting = false;
   }
 
   // Half-finished creds from an earlier QR attempt make Meta reject the pair.
   // Safe here — we only reach this path when nobody is logged in.
   try {
-    await fs.rm('whatsapp-auth-folder', { recursive: true, force: true });
-    console.log('🗑️ Cleared auth folder for a fresh pairing attempt.');
+    await fs.rm(getAuthDir(adminId), { recursive: true, force: true });
+    console.log(`🗑️ [${adminId}] Cleared auth folder for a fresh pairing attempt.`);
   } catch { /* folder may not exist */ }
 
   await new Promise(r => setTimeout(r, 500));
 
-  resetQRTiming();
-  await initWhatsApp({ method: 'pairing', phoneNumber });
+  resetQRTiming(s);
+  await initWhatsApp(adminId, { method: 'pairing', phoneNumber });
 };
 
-export const getWhatsAppConnectionState = () => {
-  if (!currentSocket && !isStarting) return { status: 'loading' };
+export const getWhatsAppConnectionState = (adminId) => {
+  const s = getSession(adminId);
 
-  if (currentSocket?.user || connectedUserMeta) {
+  if (!s.currentSocket && !s.isStarting) return { status: 'loading' };
+
+  if (s.currentSocket?.user || s.connectedUserMeta) {
     return {
       status: 'connected',
-      user: connectedUserMeta || {
-        phone: currentSocket?.user?.id?.split(':')[0] || '',
-        name: currentSocket?.user?.name || 'WhatsApp Account',
+      user: s.connectedUserMeta || {
+        phone: s.currentSocket?.user?.id?.split(':')[0] || '',
+        name: s.currentSocket?.user?.name || 'WhatsApp Account',
         imageUrl: null
       }
     };
   }
 
   // Report pairing state so a page refresh mid-pairing still shows the code
-  if (connectionMethod === 'pairing' && latestPairingCode) {
+  if (s.connectionMethod === 'pairing' && s.latestPairingCode) {
     return {
       status: 'pairing',
-      pairingCode: latestPairingCode,
-      generatedAt: pairingCodeGeneratedAt,
-      phoneNumber: pendingPhoneNumber,
+      pairingCode: s.latestPairingCode,
+      generatedAt: s.pairingCodeGeneratedAt,
+      phoneNumber: s.pendingPhoneNumber,
     };
   }
 
-  if (latestQR) {
+  if (s.latestQR) {
     return {
       status: 'scanning',
-      qrString: latestQR,
-      generatedAt: latestQRGeneratedAt,
+      qrString: s.latestQR,
+      generatedAt: s.latestQRGeneratedAt,
       // Reuse the interval assigned when this QR was generated rather than
       // recomputing — `latestQR` is already set by now, so re-deriving
       // "first vs subsequent" would always incorrectly say "subsequent".
-      refreshInterval: latestQRRefreshInterval,
+      refreshInterval: s.latestQRRefreshInterval,
     };
   }
 
   return { status: 'loading' };
 };
 
-export const getWhatsAppSocket = () => currentSocket;
+export const getWhatsAppSocket = (adminId) => sessions.get(adminId)?.currentSocket ?? null;
 
-export const logoutWhatsApp = async () => {
-  if (!currentSocket) {
+export const hasLinkedSession = async (adminId) => {
+  try {
+    const raw = await fs.readFile(path.join(getAuthDir(adminId), 'creds.json'), 'utf8');
+    return !!JSON.parse(raw).me; // `me` only exists after a successful pair
+  } catch {
+    return false;
+  }
+};
+
+export const logoutWhatsApp = async (adminId) => {
+  const s = sessions.get(adminId);
+  if (!s || !s.currentSocket) {
     return { success: true };
   }
   try {
-    intentionallyPaused = false;
-    console.log("🔄 Sending explicit unpair command to Meta...");
+    s.intentionallyPaused = false;
+    console.log(`🔄 [${adminId}] Sending explicit unpair command to Meta...`);
 
-    if (currentSocket.user?.id) {
+    if (s.currentSocket.user?.id) {
       try {
-        await currentSocket.query({
+        await s.currentSocket.query({
           tag: 'iq',
           attrs: {
             to: '@s.whatsapp.net',
@@ -364,21 +422,21 @@ export const logoutWhatsApp = async () => {
             {
               tag: 'remove-companion-device',
               attrs: {
-                jid: currentSocket.user.id,
+                jid: s.currentSocket.user.id,
                 reason: 'user_initiated'
               }
             }
           ]
         });
-        console.log("✅ Meta successfully acknowledged unpair command!");
+        console.log(`✅ [${adminId}] Meta successfully acknowledged unpair command!`);
       } catch (iqErr) {
         // Meta instantly drops the TCP connection the millisecond they unpair the
         // device. A "Connection Closed" error here means it worked perfectly.
-        console.log("✅ Unpair command sent (Connection dropped intentionally by Meta).");
+        console.log(`✅ [${adminId}] Unpair command sent (Connection dropped intentionally by Meta).`);
       }
     }
 
-    await currentSocket.logout().catch(() => {});
+    await s.currentSocket.logout().catch(() => {});
 
     await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -389,13 +447,15 @@ export const logoutWhatsApp = async () => {
   }
 };
 
-export const stopWhatsAppIdle = () => {
-  if (currentSocket && !connectedUserMeta) {
-    clearReconnectTimer();
-    intentionallyPaused = true;
-    socketGeneration++;
-    currentSocket.end(undefined);
-    currentSocket = null;
-    console.log("🛑 Admin left page. Stopping QR generation to save resources.");
+export const stopWhatsAppIdle = (adminId) => {
+  const s = sessions.get(adminId);
+  if (s && s.currentSocket && !s.connectedUserMeta) {
+    clearReconnectTimer(s);
+    s.intentionallyPaused = true;
+    s.socketGeneration++;
+    s.currentSocket.end(undefined);
+    s.currentSocket = null;
+    resetQRTiming(s); // 👈 NEW: Clears dead QRs from memory
+    console.log(`🛑 [${adminId}] Admin left page. Stopping QR generation to save resources.`);
   }
 };

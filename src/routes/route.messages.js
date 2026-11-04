@@ -13,13 +13,36 @@ import { getWhatsAppConnectionState, getWhatsAppSocket, initWhatsApp, logoutWhat
 import upload, { templateUpload } from "../config/multer.js";
 import cloudinary from "../config/cloudinary.js";
 import fs from "fs"
+import { protectRoute } from "../middlewares/auth.js";
+import { deleteChat, getChatMessages, getInboxSummary, markChatRead } from "../controllers/controller.whatsappInbox.js";
+import { connectEmail, disconnectEmail, getEmailConnection, testEmailConnection, verifyEmailConnection } from "../controllers/controller.emailconnection.js";
+import { sendTestEmail } from "../controllers/controller.emailconnection.js";
 
 const messageRoutes = express.Router();
+messageRoutes.use(protectRoute);
+
+
+//email routes
 
 messageRoutes.post("/email", sendEmailByTemplate);
+messageRoutes.get("/email-connection", getEmailConnection);
+messageRoutes.post("/email-connection/test", testEmailConnection);
+messageRoutes.post("/email-connection", connectEmail);
+messageRoutes.post("/email-connection/verify", verifyEmailConnection);
+messageRoutes.delete("/email-connection", disconnectEmail);
+messageRoutes.post("/email-connection/send-test",sendTestEmail);
+
+//whatsapp routes
+
+
 messageRoutes.post("/whatsapp", sendBaileysWhatsAppByTemplate);
-messageRoutes.post("/whatsapp/send-properties",sendBaileysWhatsAppProperties);
-messageRoutes.post("/whatsapp/direct-message",templateUpload.fields([{ name: "whatsappFile", maxCount: 5 }]),sendDirectWhatsAppMessage);
+messageRoutes.post("/whatsapp/send-properties", sendBaileysWhatsAppProperties);
+messageRoutes.post("/whatsapp/direct-message", templateUpload.fields([{ name: "whatsappFile", maxCount: 5 }]), sendDirectWhatsAppMessage);
+
+messageRoutes.get('/whatsapp/inbox/summary', getInboxSummary);
+messageRoutes.get('/whatsapp/inbox/chat/:phoneKey', getChatMessages)
+messageRoutes.post('/whatsapp/inbox/chat/:phoneKey/read', markChatRead);
+messageRoutes.delete('/whatsapp/inbox/chat/:phoneKey', deleteChat);
 
 messageRoutes.post("/uploads/file", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
@@ -30,7 +53,7 @@ messageRoutes.post("/uploads/file", upload.single("file"), async (req, res) => {
     });
 
     // clean up the local temp file now that it's on Cloudinary
-    fs.unlink(req.file.path, () => {});
+    fs.unlink(req.file.path, () => { });
 
     // GrapesJS's default asset manager expects this exact shape
     res.json({ data: [result.secure_url] });
@@ -41,26 +64,26 @@ messageRoutes.post("/uploads/file", upload.single("file"), async (req, res) => {
 });
 
 messageRoutes.get('/whatsapp-connection-status', (req, res) => {
-  // Just return the instant state. Socket.io handles waking it up now!
-  const state = getWhatsAppConnectionState();
+  const state = getWhatsAppConnectionState(req.admin.id);
+  console.log("status check for", req.admin.id, "->", state.status);
   res.json(state);
 });
 
 messageRoutes.post('/whatsapp-connection-logout', async (req, res) => {
   // Keep this! The UI button still calls it.
-  const result = await logoutWhatsApp();
+  const result = await logoutWhatsApp(req.admin.id);
   res.json(result);
 });
 
 messageRoutes.post('/whatsapp-connection-pairing-code', async (req, res) => {
   const { phoneNumber } = req.body;
- 
+
   if (!phoneNumber || typeof phoneNumber !== 'string') {
     return res.status(400).json({ success: false, error: 'phoneNumber is required' });
   }
- 
+
   try {
-    await startPairingConnection(phoneNumber);
+    await startPairingConnection(req.admin.id, phoneNumber);
     res.json({ success: true, message: 'Pairing requested — code will arrive via socket' });
   } catch (err) {
     console.error('Failed to start pairing connection:', err);
@@ -68,11 +91,11 @@ messageRoutes.post('/whatsapp-connection-pairing-code', async (req, res) => {
   }
 });
 
-messageRoutes.post("/send-email-via-ai",sendEmailDirectToCustomers);
+messageRoutes.post("/send-email-via-ai", sendEmailDirectToCustomers);
 
 
 
-messageRoutes.post("/call",callCustomer);
+messageRoutes.post("/call", callCustomer);
 
 messageRoutes.all("/exotel/voice", (req, res) => {
   res.set("Content-Type", "text/xml");

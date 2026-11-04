@@ -2,9 +2,13 @@ import nodemailer from "nodemailer";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { ImapFlow } from "imapflow";
 import dotenv from "dotenv";
+import { getAdminMailer } from "../utils/email/AdminMailerConfig.js";
+
+
 dotenv.config();
 
 // 1️⃣ Create ONE pooled transporter for all emails (Saves memory & prevents blocking)
+// (unchanged — this is still the default / fallback mailbox and the system-mail sender)
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: process.env.SMTP_PORT || 587,
@@ -21,34 +25,57 @@ const transporter = nodemailer.createTransport({
 // Helper function to pause execution
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const saveToSentFolder = async (rawEmail) => {
-  const client = new ImapFlow({
+// 👇 CHANGED: optional `imap` argument. Without it, behaviour is identical to before (Hostinger / INBOX.Sent).
+const saveToSentFolder = async (rawEmail, imap = null) => {
+  const cfg = imap || {
     host: "imap.hostinger.com",
     port: 993,
     secure: true,
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+    folder: "INBOX.Sent",
+  };
+
+  const client = new ImapFlow({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
     auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
+      user: cfg.user,
+      pass: cfg.pass,
     },
     logger: false,
   });
+  client.on("error", () => { }); // an unhandled ImapFlow 'error' event would crash the process
 
   try {
     await client.connect();
-    await client.append("INBOX.Sent", rawEmail, ["\\Seen"]);
-    console.log("✅ Email successfully saved to INBOX.Sent");
+    // in saveToSentFolder: return null on success, the error message on failure
+    await client.append(cfg.folder, rawEmail, ["\\Seen"]);
+    console.log(`✅ Email successfully saved to ${cfg.folder}`);
+    return null;
   } catch (error) {
     console.error("❌ Failed to save email to Sent folder:", error);
+    return error?.message || "Unknown IMAP error";
   } finally {
-    await client.logout();
+    // logout() throws if connect() never succeeded — that must not turn a SENT email into a "failed" one
+    try { await client.logout(); } catch { /* ignore */ }
   }
 };
 
-// 3️⃣ Generic sendEmail function 
-export const sendEmail = async (to, subject, html) => {
+// 3️⃣ Generic sendEmail function
+// 👇 CHANGED: optional 4th argument { adminId }. Omit it (or admin has no connected mailbox) => exactly the old behaviour.
+export const sendEmail = async (to, subject, html, options = {}) => {
   try {
+    const adminMailer = options?.adminId ? await getAdminMailer(options.adminId) : null;
+
+    const fromAddress = adminMailer
+      ? { name: adminMailer.fromName, address: adminMailer.email }
+      : `"Aiworksforce Team" <${process.env.SMTP_USER}>`;
+    const envelopeFrom = adminMailer ? adminMailer.email : process.env.SMTP_USER;
+
     const mailOptions = {
-      from: `"CreatikAI Team" <${process.env.SMTP_USER}>`,
+      from: fromAddress,
       to,
       subject,
       html,
@@ -56,9 +83,9 @@ export const sendEmail = async (to, subject, html) => {
 
     const rawEmail = await new MailComposer(mailOptions).compile().build();
 
-    const info = await transporter.sendMail({
+    const info = await (adminMailer ? adminMailer.transporter : transporter).sendMail({
       envelope: {
-        from: process.env.SMTP_USER,
+        from: envelopeFrom,
         to,
       },
       raw: rawEmail,
@@ -66,9 +93,16 @@ export const sendEmail = async (to, subject, html) => {
 
     console.log("✅ Email sent:", info.response);
 
-    await saveToSentFolder(rawEmail);
+    // "skipped" = we didn't try, "saved" = copy written, "failed" = IMAP error (message in sentCopyError)
+    let sentCopy = "skipped";
+    let sentCopyError = null;
 
-    return info;
+    if (!adminMailer || adminMailer.saveToSent) {
+      sentCopyError = await saveToSentFolder(rawEmail, adminMailer ? adminMailer.imap : null);
+      sentCopy = sentCopyError ? "failed" : "saved";
+    }
+
+    return { ...info, sentCopy, sentCopyError };
   } catch (error) {
     console.error("❌ Email error:", error);
     throw error;
@@ -76,6 +110,7 @@ export const sendEmail = async (to, subject, html) => {
 };
 
 // 4️⃣ System-generated mail function
+// (unchanged — account/welcome mails always come from the platform mailbox, never from an admin's)
 export const sendSystemEmail = async (to, userName, password, role) => {
   try {
     let subject = "Your Account Has Been Created";
@@ -135,16 +170,17 @@ export const sendSystemEmail = async (to, userName, password, role) => {
 };
 
 // 5️⃣ NEW: Bulk Campaign Function (Use this for sending your 500 emails)
-export const sendBulkCampaign = async (usersArray, subject, htmlContent) => {
+// 👇 CHANGED: optional 4th argument `options` ({ adminId }) is passed through to sendEmail
+export const sendBulkCampaign = async (usersArray, subject, htmlContent, options = {}) => {
   console.log(`🚀 Starting bulk send to ${usersArray.length} users...`);
 
   for (const user of usersArray) {
     try {
-      await sendEmail(user.email, subject, htmlContent);
-      
+      await sendEmail(user.email, subject, htmlContent, options);
+
       // 👈 THE MAGIC TRICK: Wait 3 seconds before sending the next one
       // This protects your Hostinger IMAP connection and keeps you unblocked.
-      await delay(3000); 
+      await delay(3000);
 
     } catch (error) {
       console.error(`❌ Failed to send to ${user.email}`);

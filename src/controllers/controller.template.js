@@ -107,7 +107,7 @@ export const createTemplate = async (req, res, next) => {
           whatsappImage: whatsappImage,
           description,
           status,
-          createdBy: req.user?.id || "system",
+          createdBy: req.admin?.id || "system",
           whatsappMediaType: req.body.whatsappMediaType || "image",
           whatsappFileName: req.body.whatsappFileName || "",
           whatsappLinkPreview,
@@ -127,7 +127,7 @@ export const createTemplate = async (req, res, next) => {
           body,
           description,
           status,
-          createdBy: req.user?.id || "system",
+          createdBy: req.admin?.id || "system",
           whatsappMediaType: req.body.whatsappMediaType || "image",
           whatsappFileName: req.body.whatsappFileName || "",
           whatsappLinkPreview,
@@ -177,9 +177,9 @@ export const getTemplates = async (req, res, next) => {
     if (search.trim() !== "") {
       filters.push({
         OR: [
-          { name: { contains: search, mode: "insensitive" } },
-          { body: { contains: search, mode: "insensitive" } },
-          { subject: { contains: search, mode: "insensitive" } },
+          { name: { contains: search,  } },
+          { body: { contains: search,  } },
+          { subject: { contains: search,  } },
         ],
       });
     }

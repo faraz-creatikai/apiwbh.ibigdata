@@ -247,11 +247,11 @@ export const getLocationByCity = async (req, res, next) => {
     const now = Date.now();
 
     // 1. Serve from cache instantly
-    if (locationCache.has(cityId)) {
+   /*  if (locationCache.has(cityId)) {
       const cached = locationCache.get(cityId);
       if (cached.expiry > now) return res.status(200).json(cached.data);
     }
-
+ */
     // 2. Fetch Data
     const locations = await prisma.location.findMany({
       where: { cityId },
@@ -277,7 +277,7 @@ export const getLocationByCity = async (req, res, next) => {
     };
 
     // 6. Update Cache
-    locationCache.set(cityId, { data: payload, expiry: now + CACHE_TTL_MS });
+   /*  locationCache.set(cityId, { data: payload, expiry: now + CACHE_TTL_MS }); */
 
     return res.status(200).json(payload);
   } catch (error) {
