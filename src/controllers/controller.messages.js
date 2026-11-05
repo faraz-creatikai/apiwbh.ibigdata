@@ -489,6 +489,7 @@ export const sendDirectWhatsAppMessage = async (req, res, next) => {
     const customerIds = req.body.customerIds ? JSON.parse(req.body.customerIds) : [];
     const location = req.body.location ? JSON.parse(req.body.location) : null;
     const poll = req.body.poll ? JSON.parse(req.body.poll) : null;
+    const phones = req.body.phones ? JSON.parse(req.body.phones) : []; // full international numbers (unknown contacts)
 
     // 👇 1. EXTRACT FROM DISK STORAGE
     let file = null;
@@ -500,7 +501,11 @@ export const sendDirectWhatsAppMessage = async (req, res, next) => {
       fileBuffer = fs.readFileSync(file.path);
     }
 
-    const customers = await fetchTargetCustomers({ customerIds, sendToAll: sendToAll === "true", admin: req.admin });
+    const found = await fetchTargetCustomers({ customerIds, sendToAll: sendToAll === "true", admin: req.admin });
+    const customers = [
+      ...found,
+      ...phones.map((p) => ({ id: null, ContactNumber: String(p), waNumber: String(p).replace(/\D/g, "") })),
+    ];
     if (!customers.length) return next(new ApiError(404, "No customers found"));
 
     const results = [];
@@ -514,7 +519,7 @@ export const sendDirectWhatsAppMessage = async (req, res, next) => {
           continue;
         }
 
-        const formattedPhone = toWaNumber(phone, c.CountryCode);
+        const formattedPhone = c.waNumber || toWaNumber(phone, c.CountryCode);
         const extra = {
           mediaType,
           location,

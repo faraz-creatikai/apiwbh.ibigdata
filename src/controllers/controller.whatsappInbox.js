@@ -4,6 +4,8 @@ import ApiError from '../utils/ApiError.js';
 import pino from 'pino';
 import cloudinary from '../config/cloudinary.js';
 import crypto from 'crypto';
+import { getCustomerAccessFilter } from './controller.customer.js';
+import { toWaNumber } from '../utils/phone.js';
 
 //HELPERS
 
@@ -161,7 +163,9 @@ export const getStoredMessage = async (adminId, key) => {
 // Called from baileys.js on every messages.upsert
 export const saveWhatsAppMessage = async (adminId, m, emit, sock) => {
     if (await handlePollVote(adminId, m, sock, emit)) return;
-    const jid = m.key.remoteJidAlt?.endsWith('@s.whatsapp.net') ? m.key.remoteJidAlt : m.key.remoteJid;
+    if (m.key.remoteJid === 'status@broadcast') return;
+    let jid = m.key.remoteJidAlt?.endsWith('@s.whatsapp.net') ? m.key.remoteJidAlt : m.key.remoteJid;
+    jid = jid ? jidNormalizedUser(jid) : null;
     if (!jid?.endsWith('@s.whatsapp.net')) return;
 
     const parsed = parse(m);
@@ -249,30 +253,63 @@ export const updateWhatsAppStatus = async (adminId, updates, emit) => {
     }
 };
 
-// GET /whatsapp/inbox/summary → last message + unread count per chat
+
+
+// full number (digits) from a stored WhatsApp JID, if the message row has one
+const jidDigits = (row) => {
+    for (const v of Object.values(row)) {
+        const m = typeof v === 'string' && v.match(/^(\d{6,15})(?::\d+)?@(?:s\.whatsapp\.net|c\.us)$/);
+        if (m) return m[1];
+    }
+    return null;
+};
+
 export const getInboxSummary = async (req, res, next) => {
     try {
         const adminId = req.admin.id;
-        const [last, unread] = await Promise.all([
-            prisma.whatsAppMessage.findMany({
-                where: { adminId },
-                orderBy: { timestamp: 'desc' },
-                distinct: ['phoneKey'],
-                select: { phoneKey: true, body: true, type: true, fromMe: true, timestamp: true },
-            }),
+        const [last, unread, customers] = await Promise.all([
+            // no `select`: so a stored JID column (whatever it's called) can be picked up
+            prisma.whatsAppMessage.findMany({ where: { adminId }, orderBy: { timestamp: 'desc' }, distinct: ['phoneKey'] }),
             prisma.whatsAppMessage.groupBy({
                 by: ['phoneKey'],
                 where: { adminId, fromMe: false, isRead: false },
                 _count: { _all: true },
             }),
+            prisma.customer.findMany({
+                where: await getCustomerAccessFilter(req.admin),
+                select: { id: true, customerName: true, ContactNumber: true, CountryCode: true },
+            }),
         ]);
         const unreadMap = Object.fromEntries(unread.map((u) => [u.phoneKey, u._count._all]));
-        res.json({ success: true, chats: last.map((l) => ({ ...l, unread: unreadMap[l.phoneKey] || 0 })) });
+
+        // customer full number = CountryCode + ContactNumber (any length), via your toWaNumber
+        const byFull = new Map();
+        const byKey = new Map(); // fallback, only for chats where no full number is stored
+        for (const c of customers) {
+            const full = toWaNumber(c.ContactNumber, c.CountryCode);
+            if (!full) continue;
+            if (!byFull.has(full)) byFull.set(full, { c, full });
+            if (!byKey.has(full.slice(-10))) byKey.set(full.slice(-10), { c, full });
+        }
+
+        res.json({
+            success: true,
+            chats: last.map((l) => {
+                const jid = jidDigits(l);
+                const hit = jid ? byFull.get(jid) : byKey.get(l.phoneKey) || byFull.get(l.phoneKey);
+                return {
+                    phoneKey: l.phoneKey, body: l.body, type: l.type, fromMe: l.fromMe, timestamp: l.timestamp,
+                    unread: unreadMap[l.phoneKey] || 0,
+                    name: hit?.c.customerName,
+                    customerId: hit?.c.id,
+                    phone: jid || hit?.full, // full international number → replies never lose the country code
+                };
+            }),
+        });
     } catch (err) {
         next(new ApiError(500, err.message));
     }
 };
-
 // GET /whatsapp/inbox/chat/:phoneKey?before=<ISO>  → 50 messages per page, oldest first
 export const getChatMessages = async (req, res, next) => {
     try {
