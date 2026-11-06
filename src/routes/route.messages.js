@@ -17,6 +17,8 @@ import { protectRoute } from "../middlewares/auth.js";
 import { deleteChat, getChatMessages, getInboxSummary, markChatRead } from "../controllers/controller.whatsappInbox.js";
 import { connectEmail, disconnectEmail, getEmailConnection, testEmailConnection, verifyEmailConnection } from "../controllers/controller.emailconnection.js";
 import { sendTestEmail } from "../controllers/controller.emailconnection.js";
+import { downloadEmailAttachment, getEmailInboxStatus, getEmailMessage, listEmailMessages, syncEmailInbox, updateEmailMessages } from "../controllers/controller.emailInbox.js";
+import { cancelEmailSendBatch, getEmailSendBatch, replyToInboxEmail, sendEmailFromInbox } from "../controllers/controller.emailCompose.js";
 
 const messageRoutes = express.Router();
 messageRoutes.use(protectRoute);
@@ -31,6 +33,25 @@ messageRoutes.post("/email-connection", connectEmail);
 messageRoutes.post("/email-connection/verify", verifyEmailConnection);
 messageRoutes.delete("/email-connection", disconnectEmail);
 messageRoutes.post("/email-connection/send-test",sendTestEmail);
+
+
+
+
+//email inbox routes
+messageRoutes.get("/email/inbox/status", getEmailInboxStatus);
+messageRoutes.post("/email/inbox/sync", syncEmailInbox);
+messageRoutes.get("/email/inbox/messages", listEmailMessages);
+messageRoutes.patch("/email/inbox/messages", updateEmailMessages); // bulk: { ids, isRead?, isStarred? }
+messageRoutes.get("/email/inbox/messages/:id", getEmailMessage);
+messageRoutes.get("/email/inbox/messages/:id/attachments/:index", downloadEmailAttachment);
+
+//email inbox compose send/reply routes
+const emailAttach = templateUpload.fields([{ name: "attachments", maxCount: 5 }]); // files are optional
+messageRoutes.post("/email/inbox/send", emailAttach, sendEmailFromInbox);
+messageRoutes.post("/email/inbox/reply", emailAttach, replyToInboxEmail);
+messageRoutes.get("/email/inbox/batches/:id", getEmailSendBatch);
+messageRoutes.post("/email/inbox/batches/:id/cancel", cancelEmailSendBatch);
+
 
 //whatsapp routes
 

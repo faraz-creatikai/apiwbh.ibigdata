@@ -65,6 +65,7 @@ const saveToSentFolder = async (rawEmail, imap = null) => {
 
 // 3️⃣ Generic sendEmail function
 // 👇 CHANGED: optional 4th argument { adminId }. Omit it (or admin has no connected mailbox) => exactly the old behaviour.
+// 👇 options can also carry { text, attachments, inReplyTo, references, messageId } (inbox compose / reply).
 export const sendEmail = async (to, subject, html, options = {}) => {
   try {
     const adminMailer = options?.adminId ? await getAdminMailer(options.adminId) : null;
@@ -79,6 +80,12 @@ export const sendEmail = async (to, subject, html, options = {}) => {
       to,
       subject,
       html,
+      // 👇 NEW (all optional) — used by the inbox compose / reply controller
+      ...(options.text && { text: options.text }),
+      ...(options.attachments?.length && { attachments: options.attachments }), // [{ filename, path|content, contentType }]
+      ...(options.inReplyTo && { inReplyTo: options.inReplyTo }),
+      ...(options.references && { references: options.references }),
+      ...(options.messageId && { messageId: options.messageId }),
     };
 
     const rawEmail = await new MailComposer(mailOptions).compile().build();
@@ -102,7 +109,7 @@ export const sendEmail = async (to, subject, html, options = {}) => {
       sentCopy = sentCopyError ? "failed" : "saved";
     }
 
-    return { ...info, sentCopy, sentCopyError };
+    return { ...info, messageId: mailOptions.messageId || info.messageId, sentCopy, sentCopyError };
   } catch (error) {
     console.error("❌ Email error:", error);
     throw error;

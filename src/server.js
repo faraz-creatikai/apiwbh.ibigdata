@@ -9,6 +9,8 @@ import { initFacebookCron, initInstagramCron } from "./jobs/instagramScheduler.j
 import { initSocket } from "./socket/socket.js";
 import { deleteOldNotifications, initFollowupNotificationCron } from "./jobs/notification/notificationEvents.js";
 import { sweepOldUploads } from "./jobs/cleanupUploads.js";
+import { startInboxWorker } from "./utils/email/inboxSync.js";
+import { startEmailSendWorker } from "./controllers/controller.emailCompose.js";
 
 
 const PORT = process.env.PORT || 5000;
@@ -21,6 +23,8 @@ server.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
 
   startCallLogSync(); // ← replaces the entire setInterval block
+  startInboxWorker();
+  startEmailSendWorker();
 
   initInstagramCron();
   initFacebookCron();

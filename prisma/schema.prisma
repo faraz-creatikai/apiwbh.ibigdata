@@ -75,9 +75,12 @@ model Admin {
 
   callingAgentConfigs CallingAgentConfig[]
 
-  whatsappMessages   WhatsAppMessage[]
-  whatsappMetaConfig WhatsAppMetaConfig?
-  emailConfig        AdminEmailConfig?
+  whatsappMessages    WhatsAppMessage[]
+  whatsappMetaConfig  WhatsAppMetaConfig?
+  emailConfig         AdminEmailConfig?
+  emailInboxSyncState EmailInboxSyncState?
+  emailMessages       EmailMessage[]
+  emailSendBatches    EmailSendBatch[]
 
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
@@ -172,6 +175,85 @@ model AdminEmailConfig {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model EmailInboxSyncState {
+  adminId String @id
+  admin   Admin  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  uidValidity String? // IMAP UIDVALIDITY; if it changes, stored UIDs are meaningless -> resync
+  lastUid     Int       @default(0) // highest UID already ingested (incremental cursor)
+  lastSyncAt  DateTime?
+  lastError   String?   @db.Text
+  lockUntil   DateTime? // lease: one worker per mailbox (also used as retry back-off)
+}
+
+model EmailMessage {
+  id      String @id @default(uuid())
+  adminId String
+  admin   Admin  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  folder String @default("INBOX") // only INBOX for now; column is here so Sent/Spam can be added later
+  uid    Int // IMAP UID inside that folder
+
+  // threading (also what the future "reply" controller needs: In-Reply-To / References)
+  messageId String? @db.Text
+  threadKey String  @db.VarChar(512)
+  refs      String? @db.Text // space separated Message-IDs
+
+  fromEmail String
+  fromName  String?
+  toList    Json    @default("[]") // [{ name, address }]
+  ccList    Json    @default("[]")
+
+  subject  String  @db.Text
+  snippet  String  @db.VarChar(300)
+  bodyText String? @db.MediumText
+  bodyHtml String? @db.MediumText // already sanitized at ingest; still render in a sandboxed iframe
+
+  attachments    Json    @default("[]") // metadata only: [{ index, filename, contentType, size, inline }]
+  hasAttachments Boolean @default(false)
+
+  date      DateTime
+  isRead    Boolean  @default(false)
+  isStarred Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([adminId, folder, uid]) // makes ingestion idempotent (safe if two workers overlap)
+  @@index([adminId, folder, date])
+  @@index([adminId, threadKey])
+  @@index([adminId, folder, isRead])
+}
+
+model EmailSendBatch {
+  id      String @id @default(uuid())
+  adminId String
+  admin   Admin  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  kind   String // compose | reply
+  status String @default("queued") // queued | sending | done | failed | cancelled
+
+  subject     String  @db.Text // may contain {{placeholders}}
+  bodyHtml    String  @db.MediumText // may contain {{placeholders}}
+  quoteHtml   String? @db.MediumText // quoted original (replies only), appended after personalisation
+  attachments Json    @default("[]") // [{ filename, path, contentType }] — files live on disk until the batch ends
+
+  inReplyTo String? @db.Text // replies: Message-ID of the mail we answer
+  refs      String? @db.Text // replies: References header
+
+  recipients Json
+  total      Int
+  sent       Int  @default(0)
+  failed     Int  @default(0)
+  skipped    Int  @default(0)
+
+  lockUntil  DateTime? // lease: one worker per batch; also lets a crashed run be resumed
+  error      String?   @db.Text
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([adminId, createdAt])
+  @@index([status, lockUntil])
 }
 
 model WhatsAppMetaConfig {
