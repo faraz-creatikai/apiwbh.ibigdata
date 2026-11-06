@@ -47,7 +47,7 @@ messageRoutes.get("/email/inbox/messages/:id/attachments/:index", downloadEmailA
 
 //email inbox compose send/reply routes
 const emailAttach = templateUpload.fields([{ name: "attachments", maxCount: 5 }]); // files are optional
-messageRoutes.post("/email/inbox/send", emailAttach, sendEmailFromInbox);
+//messageRoutes.post("/email/inbox/send", emailAttach, sendEmailFromInbox);
 messageRoutes.post("/email/inbox/reply", emailAttach, replyToInboxEmail);
 messageRoutes.get("/email/inbox/batches/:id", getEmailSendBatch);
 messageRoutes.post("/email/inbox/batches/:id/cancel", cancelEmailSendBatch);
