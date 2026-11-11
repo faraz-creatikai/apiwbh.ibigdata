@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import pino from 'pino';
 import { getStoredMessage, saveWhatsAppMessage, updateWhatsAppStatus } from '../controllers/controller.whatsappInbox.js';
+import { trackWhatsAppStatus, trackWhatsAppReply } from '../utils/channelTracking.js';
 
 // Verified against Baileys' source (src/Socket/socket.ts, the `genPairQR` loop
 // that fires on the `pair-device` stanza):
@@ -298,9 +299,10 @@ export const initWhatsApp = async (adminId, options = {}) => {
     }
   });
 
-  sock.ev.on('messages.upsert', ({ messages }) => {
+  sock.ev.on('messages.upsert', ({ messages,type }) => {
     if (myGeneration !== s.socketGeneration) return;
     for (const m of messages) {
+      if (type === 'notify') trackWhatsAppReply(adminId, m, sock).catch(() => {});
       if (m.message?.pollUpdateMessage) console.log('🗳️ vote received for poll', m.message.pollUpdateMessage.pollCreationMessageKey?.id);
       saveWhatsAppMessage(adminId, m, emitToAdmin, sock).catch((e) => console.error('save msg:', e.message));
     }
@@ -308,7 +310,8 @@ export const initWhatsApp = async (adminId, options = {}) => {
 
   sock.ev.on('messages.update', (updates) => {
     if (myGeneration !== s.socketGeneration) return;
-    updateWhatsAppStatus(adminId, updates, emitToAdmin).catch(() => {});
+     trackWhatsAppStatus(updates).catch(() => {});    
+    updateWhatsAppStatus(adminId, updates, emitToAdmin).catch(() => { });
   });
 
   s.currentSocket = sock;
@@ -436,7 +439,7 @@ export const logoutWhatsApp = async (adminId) => {
       }
     }
 
-    await s.currentSocket.logout().catch(() => {});
+    await s.currentSocket.logout().catch(() => { });
 
     await new Promise(resolve => setTimeout(resolve, 2000));
 

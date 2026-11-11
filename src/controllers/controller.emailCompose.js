@@ -94,7 +94,7 @@ const escCtx = (ctx) => {
 /** replacePlaceholders leaves {{CustomerFields.X}} untouched when the recipient has no such field — blank it, never send it raw. */
 const fill = (str, ctx) => replacePlaceholders(str, ctx).replace(/\{\{\s*CustomerFields\.[^}]*\}\}/g, "");
 
-const htmlToText = (html) =>
+export const htmlToText = (html) =>
     sanitizeHtml(String(html || "").replace(/<(br|\/p|\/div|\/h[1-6]|\/li|\/tr)\b[^>]*>/gi, "\n"), {
         allowedTags: [],
         allowedAttributes: {},
@@ -146,7 +146,7 @@ const moveAttachments = async (batchId, files) => {
     }
     return out;
 };
-const removeAttachments = (batchId) => fs.promises.rm(path.join(ATTACH_ROOT, batchId), { recursive: true, force: true }).catch(() => { });
+export const removeAttachments = (batchId) => fs.promises.rm(path.join(ATTACH_ROOT, batchId), { recursive: true, force: true }).catch(() => { });
 
 /* ------------------------------ template media ------------------------------ */
 
@@ -201,7 +201,7 @@ const downloadMedia = async (rawUrl, dest, maxBytes) => {
 };
 
 /** Template -> attachment entries (files already saved in the batch folder). [] when the template has no media. */
-const templateAttachments = async (batchId, templateId, usedFiles, usedBytes) => {
+export const templateAttachments = async (batchId, templateId, usedFiles, usedBytes) => {
     const tpl = await prisma.template.findUnique({ where: { id: templateId } });
     if (!tpl || tpl.type !== "email") throw new Reject(404, "Template not found");
 

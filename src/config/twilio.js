@@ -1,6 +1,7 @@
 import twilio from "twilio";
 import dotenv from "dotenv";
 import { getWhatsAppConnectionState, getWhatsAppSocket, hasLinkedSession, initWhatsApp } from "./baileys.js";
+import { recordSend } from "../utils/channelTracking.js";
 
 dotenv.config();
 
@@ -63,22 +64,22 @@ export const sendBaileysWhatsApp = async (adminId, to, message, imageUrl = null,
 
     // 1. Wake up engine if asleep
     if (!sock || getWhatsAppConnectionState(adminId).status !== 'connected') {
-  if (!sock) {
-    if (!(await hasLinkedSession(adminId))) throw new Error("WhatsApp is not linked for this admin");
-    initWhatsApp(adminId).catch((e) => console.error(`[${adminId}] init failed:`, e.message));
-  }
+      if (!sock) {
+        if (!(await hasLinkedSession(adminId))) throw new Error("WhatsApp is not linked for this admin");
+        initWhatsApp(adminId).catch((e) => console.error(`[${adminId}] init failed:`, e.message));
+      }
 
-  let retries = 0;
-  while (getWhatsAppConnectionState(adminId).status !== 'connected' && retries < 15) {
-    await delay(1000);
-    retries++;
-  }
+      let retries = 0;
+      while (getWhatsAppConnectionState(adminId).status !== 'connected' && retries < 15) {
+        await delay(1000);
+        retries++;
+      }
 
-  sock = getWhatsAppSocket(adminId);
-  if (!sock || getWhatsAppConnectionState(adminId).status !== 'connected') {
-    throw new Error("WhatsApp socket failed to connect. Is this admin's WhatsApp linked?");
-  }
-}
+      sock = getWhatsAppSocket(adminId);
+      if (!sock || getWhatsAppConnectionState(adminId).status !== 'connected') {
+        throw new Error("WhatsApp socket failed to connect. Is this admin's WhatsApp linked?");
+      }
+    }
 
     const {
       mediaType = "text",
@@ -221,6 +222,10 @@ export const sendBaileysWhatsApp = async (adminId, to, message, imageUrl = null,
 
     // 6. Send the payload
     const result = await sock.sendMessage(jid, content);
+    recordSend({
+      adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
+      providerMessageId: result?.key?.id, status: "sent"
+    });
 
     // If it's a location, send the caption text separately as a follow-up message
     if (mediaType === "location" && message) {
@@ -232,6 +237,10 @@ export const sendBaileysWhatsApp = async (adminId, to, message, imageUrl = null,
     return result;
   } catch (error) {
     console.error("❌ WhatsApp error:", error.message);
+    recordSend({
+      adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
+      status: "failed", error: String(error.message).slice(0, 500)
+    });
     throw error;
   }
 };
@@ -243,10 +252,10 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
     // 1. 🛑 FIX: Wait if socket is completely missing OR if it's currently reconnecting
     if (!sock || getWhatsAppConnectionState(adminId).status !== 'connected') {
       console.log("🚦 WhatsApp engine is reconnecting or asleep. Waiting...");
-     if (!sock) {
-  if (!(await hasLinkedSession(adminId))) throw new Error("WhatsApp is not linked for this admin");
-  initWhatsApp(adminId).catch((e) => console.error(`[${adminId}] init failed:`, e.message));
-}
+      if (!sock) {
+        if (!(await hasLinkedSession(adminId))) throw new Error("WhatsApp is not linked for this admin");
+        initWhatsApp(adminId).catch((e) => console.error(`[${adminId}] init failed:`, e.message));
+      }
 
       let retries = 0;
       while (getWhatsAppConnectionState(adminId).status !== 'connected' && retries < 15) {
@@ -327,6 +336,8 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
     let result;
     try {
       result = await sock.sendMessage(jid, content);
+      recordSend({ adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
+             providerMessageId: result?.key?.id, status: "sent" });
     } catch (sendError) {
       // If it STILL throws a connection closed (e.g. timeout during a large file upload), retry once.
       if (sendError.message.toLowerCase().includes('close') || sendError.message.toLowerCase().includes('timeout')) {
@@ -352,6 +363,8 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
     return result;
   } catch (error) {
     console.error("❌ WhatsApp Direct Send error:", error.message);
+    recordSend({ adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
+             status: "failed", error: String(error.message).slice(0, 500) });
     throw error;
   }
 };

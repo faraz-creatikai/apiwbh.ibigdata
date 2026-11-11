@@ -3,6 +3,8 @@ import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { ImapFlow } from "imapflow";
 import dotenv from "dotenv";
 import { getAdminMailer } from "../utils/email/AdminMailerConfig.js";
+import crypto from "node:crypto"; 
+import { recordSend, trackingPixel } from "../utils/channelTracking.js";
 
 
 dotenv.config();
@@ -67,6 +69,8 @@ const saveToSentFolder = async (rawEmail, imap = null) => {
 // 👇 CHANGED: optional 4th argument { adminId }. Omit it (or admin has no connected mailbox) => exactly the old behaviour.
 // 👇 options can also carry { text, attachments, inReplyTo, references, messageId } (inbox compose / reply).
 export const sendEmail = async (to, subject, html, options = {}) => {
+  const trackId = options.track === false ? null : crypto.randomUUID();
+  const track = (extra) => trackId && recordSend({ id: trackId, adminId: options.adminId ?? null, channel: "email", source: options.source || "other", recipient: String(to), ...extra });
   try {
     const adminMailer = options?.adminId ? await getAdminMailer(options.adminId) : null;
 
@@ -74,44 +78,36 @@ export const sendEmail = async (to, subject, html, options = {}) => {
       ? { name: adminMailer.fromName, address: adminMailer.email }
       : `"Aiworksforce Team" <${process.env.SMTP_USER}>`;
     const envelopeFrom = adminMailer ? adminMailer.email : process.env.SMTP_USER;
+    // always set our own Message-ID so replies and bounces can be matched to it later
+    const messageId = options.messageId || `<${crypto.randomUUID()}@${String(envelopeFrom).split("@")[1] || "localhost"}>`;
 
     const mailOptions = {
       from: fromAddress,
       to,
       subject,
-      html,
-      // 👇 NEW (all optional) — used by the inbox compose / reply controller
+      html: trackId ? html + trackingPixel(trackId) : html,
+      messageId,
       ...(options.text && { text: options.text }),
-      ...(options.attachments?.length && { attachments: options.attachments }), // [{ filename, path|content, contentType }]
+      ...(options.attachments?.length && { attachments: options.attachments }),
       ...(options.inReplyTo && { inReplyTo: options.inReplyTo }),
       ...(options.references && { references: options.references }),
-      ...(options.messageId && { messageId: options.messageId }),
     };
 
     const rawEmail = await new MailComposer(mailOptions).compile().build();
-
-    const info = await (adminMailer ? adminMailer.transporter : transporter).sendMail({
-      envelope: {
-        from: envelopeFrom,
-        to,
-      },
-      raw: rawEmail,
-    });
-
+    const info = await (adminMailer ? adminMailer.transporter : transporter).sendMail({ envelope: { from: envelopeFrom, to }, raw: rawEmail });
     console.log("✅ Email sent:", info.response);
+    track({ providerMessageId: messageId, status: "sent" });
 
-    // "skipped" = we didn't try, "saved" = copy written, "failed" = IMAP error (message in sentCopyError)
     let sentCopy = "skipped";
     let sentCopyError = null;
-
     if (!adminMailer || adminMailer.saveToSent) {
       sentCopyError = await saveToSentFolder(rawEmail, adminMailer ? adminMailer.imap : null);
       sentCopy = sentCopyError ? "failed" : "saved";
     }
-
-    return { ...info, messageId: mailOptions.messageId || info.messageId, sentCopy, sentCopyError };
+    return { ...info, messageId, sentCopy, sentCopyError };
   } catch (error) {
     console.error("❌ Email error:", error);
+    track({ status: "failed", error: String(error.message).slice(0, 500) });
     throw error;
   }
 };

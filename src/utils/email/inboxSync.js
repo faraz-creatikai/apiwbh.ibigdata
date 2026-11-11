@@ -18,6 +18,7 @@ import sanitizeHtml from "sanitize-html";
 import prisma from "../../config/prismaClient.js";
 import { decryptSecret } from "./emailCrypto.js";
 import { assertPublicHost } from "./emailProviders.js";
+import { trackEmailInbox } from "../channelTracking.js";
 
 const FOLDER = "INBOX";
 const INTERVAL_MS = Number(process.env.INBOX_SYNC_INTERVAL_MS) || 60_000;
@@ -249,6 +250,7 @@ export const syncInbox = async (adminId) => {
     });
 
     await prisma.emailInboxSyncState.update({ where: { adminId }, data: { lastSyncAt: new Date(), lastError: null } });
+    trackEmailInbox(adminId).catch(() => {});
     return { added };
   } catch (err) {
     holdMs = err.authenticationFailed ? AUTH_RETRY_MS : RETRY_MS;

@@ -75,6 +75,8 @@ model Admin {
 
   callingAgentConfigs CallingAgentConfig[]
 
+  outreachCampaigns OutreachCampaign[] @relation("OutreachCampaignCreatedBy")
+
   whatsappMessages    WhatsAppMessage[]
   whatsappMetaConfig  WhatsAppMetaConfig?
   emailConfig         AdminEmailConfig?
@@ -110,6 +112,120 @@ enum AIProvider {
   MISTRAL
   GROQ
   CUSTOM
+}
+
+model OutreachCampaign {
+  id          String @id @default(uuid())
+  name        String
+  description String @default("")
+  status      String @default("active") // active | paused  (the scheduler will skip paused ones)
+
+  // tools used: any of ["email", "whatsapp_baileys", "whatsapp_meta", "ai_calling"]
+  channels Json
+
+  // one template for email, one for WhatsApp (shared by baileys + meta)
+  // if a template is deleted later the field becomes null; the runner will skip that channel with a clear message
+  emailTemplateId    String?
+  emailTemplate      Template? @relation("CampaignEmailTemplate", fields: [emailTemplateId], references: [id], onDelete: SetNull)
+  whatsappTemplateId String?
+  whatsappTemplate   Template? @relation("CampaignWhatsappTemplate", fields: [whatsappTemplateId], references: [id], onDelete: SetNull)
+
+  // AI calling: placeholder until we decide what a call needs (agent / script / config)
+  aiAgentId String?
+
+  // the customers this campaign targets (ids only, checked against the creator's access when saved)
+  customerIds   Json
+  customerCount Int  @default(0)
+
+  // who created it
+  createdById String
+  createdBy   Admin  @relation("OutreachCampaignCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+
+  lastRunAt DateTime?
+
+  schedules OutreachCampaignSchedule[]
+  runs      OutreachCampaignRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// A campaign can have many scheduled times. Each row = one automatic run at `runAt`.
+model OutreachCampaignSchedule {
+  id         String           @id @default(uuid())
+  campaignId String
+  campaign   OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  label    String  @default("")
+  time     String // "HH:mm", 24 hour, in `timezone`
+  days     Json // [0..6]
+  timezone String  @default("Asia/Kolkata")
+  enabled  Boolean @default(true)
+
+  nextRunAt     DateTime? // when the worker will run it next (stored in UTC). null = nothing left to run
+  lastRunAt     DateTime?
+  lastRunStatus String? // started | skipped_paused | skipped_running | missed | failed
+  lastError     String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, nextRunAt])
+}
+
+// One row every time the campaign runs (manual button or schedule) = the report header.
+model OutreachCampaignRun {
+  id         String           @id @default(uuid())
+  campaignId String
+  campaign   OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  trigger        String // manual | scheduled
+  scheduleId     String?
+  status         String    @default("running") // running | completed | failed | cancelled
+  totalCustomers Int       @default(0)
+  summary        Json? // { email: { sent, failed, skipped }, whatsapp_baileys: {...}, ... }
+  error          String?   @db.Text
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  logs OutreachCampaignLog[]
+
+  @@index([campaignId, startedAt])
+}
+
+// One row per customer per channel per run = the detailed report.
+model OutreachCampaignLog {
+  id    String              @id @default(uuid())
+  runId String
+  run   OutreachCampaignRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  customerId String
+  channel    String // email | whatsapp_baileys | whatsapp_meta | ai_calling
+  status     String // sent | failed | skipped
+  detail     String?  @db.Text // error message or the reason it was skipped
+  createdAt  DateTime @default(now())
+
+  @@index([runId, channel, status])
+}
+
+model ChannelMessage {
+  id                String    @id @default(uuid())
+  adminId           String?
+  channel           String // "email" | "whatsapp_baileys"
+  source            String    @default("other") // "campaign" | "inbox" | "chat" | "other"
+  recipient         String
+  providerMessageId String?   @db.VarChar(255)
+  status            String // "sent" | "failed"
+  error             String?   @db.VarChar(500)
+  sentAt            DateTime  @default(now())
+  deliveredAt       DateTime?
+  openedAt          DateTime?
+  openCount         Int       @default(0)
+  repliedAt         DateTime?
+  bouncedAt         DateTime?
+
+  @@index([adminId, channel, sentAt])
+  @@index([providerMessageId])
 }
 
 model CallingAgentConfig {
@@ -568,13 +684,15 @@ model Template {
   createdBy     String @default("system")
   status        String @default("Active") // Active | Inactive
 
-  whatsappMediaType   String? @default("image") // image | video | document | none
-  whatsappFileName    String? @default("") // shown as filename when mediaType = document
-  whatsappLinkPreview Json?   @default("null") // { title, body, thumbnailUrl, sourceUrl }
-  whatsappLocation    Json?   @default("null") // { lat, lng, name, address }
-  whatsappPoll        Json?   @default("null") // { name, options: [], selectableCount }
-  variables           Json?   @default("[]") // e.g. ["customerName","amount"] — useful for email too, as a "available merge tags" hint in your UI
-  category            String? @default("") // free-text grouping, e.g. "marketing" / "reminder" — just metadata
+  whatsappMediaType   String?            @default("image") // image | video | document | none
+  whatsappFileName    String?            @default("") // shown as filename when mediaType = document
+  whatsappLinkPreview Json?              @default("null") // { title, body, thumbnailUrl, sourceUrl }
+  whatsappLocation    Json?              @default("null") // { lat, lng, name, address }
+  whatsappPoll        Json?              @default("null") // { name, options: [], selectableCount }
+  variables           Json?              @default("[]") // e.g. ["customerName","amount"] — useful for email too, as a "available merge tags" hint in your UI
+  category            String?            @default("") // free-text grouping, e.g. "marketing" / "reminder" — just metadata
+  emailCampaigns      OutreachCampaign[] @relation("CampaignEmailTemplate")
+  whatsappCampaigns   OutreachCampaign[] @relation("CampaignWhatsappTemplate")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

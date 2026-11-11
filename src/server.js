@@ -11,6 +11,8 @@ import { deleteOldNotifications, initFollowupNotificationCron } from "./jobs/not
 import { sweepOldUploads } from "./jobs/cleanupUploads.js";
 import { startInboxWorker } from "./utils/email/inboxSync.js";
 import { startEmailSendWorker } from "./controllers/controller.emailCompose.js";
+import { startCampaignRunMonitor } from "./controllers/controller.outreachCampaignRun.js";
+import { startCampaignScheduler } from "./controllers/controller.outreachCampaignSchedule.js";
 
 
 const PORT = process.env.PORT || 5000;
@@ -30,6 +32,9 @@ server.listen(PORT, async () => {
   initFacebookCron();
   initFollowupNotificationCron();
 
+  startCampaignRunMonitor();
+  startCampaignScheduler();
+
   setInterval(async () => {
     try { await deleteOldNotifications(); }
     catch (err) { console.error("Notification cleanup error:", err); }
@@ -46,6 +51,6 @@ server.listen(PORT, async () => {
   }, 15 * 60 * 1000);
 });
 
-server.timeout = 600000; 
+server.timeout = 600000;
 server.keepAliveTimeout = 600000;
 server.headersTimeout = 601000;

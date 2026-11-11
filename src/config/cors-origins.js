@@ -17,5 +17,6 @@ export const ALLOWED_ORIGINS = [
 ];
 
 export const clientUrl = "https://wbh.ibigdata.in";
+export const serverUrl = "https://apiwbh.ibigdata.in";
 
 
