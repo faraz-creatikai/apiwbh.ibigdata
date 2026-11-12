@@ -87,14 +87,19 @@ export const sendEmail = async (to, subject, html, options = {}) => {
     const messageId = options.messageId || `<${crypto.randomUUID()}@${String(envelopeFrom).split("@")[1] || "localhost"}>`;
 
     // 👇 FIX: Safely inject pixel INSIDE the </body> tag so Gmail doesn't strip it
-    // Inside sendEmail in mailer.js
+    // 👇 BULLETPROOF PIXEL INJECTION (mailer.js)
     let finalHtml = html;
     if (trackId) {
       const pixel = trackingPixel(trackId);
       if (/<\/body>/i.test(finalHtml)) {
+        // If there is a body tag, put it right inside
         finalHtml = finalHtml.replace(/<\/body>/i, `${pixel}</body>`);
+      } else if (/<\/html>/i.test(finalHtml)) {
+        // If there's an html tag but no body, put it inside html
+        finalHtml = finalHtml.replace(/<\/html>/i, `${pixel}</html>`);
       } else {
-        finalHtml += pixel;
+        // If it's just a raw snippet (like a <div>), wrap the whole thing so the pixel is safe
+        finalHtml = `<div>${finalHtml}${pixel}</div>`;
       }
     }
 
