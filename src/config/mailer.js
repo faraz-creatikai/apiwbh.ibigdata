@@ -73,10 +73,10 @@ export const sendEmail = async (to, subject, html, options = {}) => {
   const track = (extra) => trackId && recordSend({
     id: trackId,
     adminId: options.adminId ?? null, channel: "email", source: options.source || "other",
-    runId: options.runId ?? null, customerId: options.customerId ?? null,   
+    runId: options.runId ?? null, customerId: options.customerId ?? null,
     recipient: String(to), ...extra
   });
-  
+
   try {
     const adminMailer = options?.adminId ? await getAdminMailer(options.adminId) : null;
 
@@ -87,11 +87,12 @@ export const sendEmail = async (to, subject, html, options = {}) => {
     const messageId = options.messageId || `<${crypto.randomUUID()}@${String(envelopeFrom).split("@")[1] || "localhost"}>`;
 
     // 👇 FIX: Safely inject pixel INSIDE the </body> tag so Gmail doesn't strip it
+    // Inside sendEmail in mailer.js
     let finalHtml = html;
     if (trackId) {
       const pixel = trackingPixel(trackId);
-      if (finalHtml.includes('</body>')) {
-        finalHtml = finalHtml.replace('</body>', `${pixel}</body>`);
+      if (/<\/body>/i.test(finalHtml)) {
+        finalHtml = finalHtml.replace(/<\/body>/i, `${pixel}</body>`);
       } else {
         finalHtml += pixel;
       }

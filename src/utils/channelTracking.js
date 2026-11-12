@@ -13,13 +13,30 @@ export const trackingPixel = (id) => {
   return base ? `<img src="${base}/o/${id}.gif" width="1" height="1" alt="" style="border:0;width:1px;height:1px;">` : "";
 };
 
-/* ───────── email: open (called by the public pixel route) ───────── */
+
 /* ───────── email: open (called by the public pixel route) ───────── */
 export const trackOpen = async (id) => {
-  // FIX: Changed {36} to {24,36} to allow 24-character database IDs to pass!
-  if (!/^[0-9a-f-]{24,36}$/i.test(id)) return;
-  await prisma.channelMessage.updateMany({ where: { id, channel: "email" }, data: { openCount: { increment: 1 } } });
-  await prisma.channelMessage.updateMany({ where: { id, channel: "email", openedAt: null }, data: { openedAt: new Date() } });
+  // 1. Check if the regex is silently rejecting your ID
+  if (!/^[0-9a-f-]{24,36}$/i.test(id)) {
+    console.log(`❌ [OPEN REJECTED] ID failed regex check: "${id}"`);
+    return;
+  }
+
+  // 2. The ID passed! The email client successfully pinged your server.
+  console.log(`\n🔔 [OPEN DETECTED] Pixel requested for ID: ${id}`);
+
+  // 3. Attempt the database update and capture the result
+  const res = await prisma.channelMessage.updateMany({ 
+    where: { id, channel: "email" }, 
+    data: { openCount: { increment: 1 } } 
+  });
+
+  console.log(`💾 DB Update Result: Modified ${res.count} rows`);
+
+  await prisma.channelMessage.updateMany({ 
+    where: { id, channel: "email", openedAt: null }, 
+    data: { openedAt: new Date() } 
+  });
 };
 
 /* ───────── email: replies + bounces (run after each inbox sync) ───────── */
