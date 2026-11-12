@@ -100,7 +100,7 @@ const failure = (code, plan, extra = {}) => ({
  * Nothing is ever saved by this function; it returns either a fully verified
  * config or a precise reason why not.
  */
-export const detectAndVerify = async ({ email, password, advanced }) => {
+export const detectAndVerify = async ({ email, password,imapPassword, advanced }) => {
   email = String(email).trim().toLowerCase();
 
   const plan = advanced?.smtpHost ? manualPlan(advanced) : await resolvePlan(email);
@@ -158,9 +158,11 @@ export const detectAndVerify = async ({ email, password, advanced }) => {
   let sentFolder = null;
 
   if (!plan.autoSavesSent) {
+    const imapPassToTest = imapPassword ? String(imapPassword).trim() : pass;
+
     for (const im of winner.group.imap) {
       try { await assertPublicHost(im.host); } catch { continue; }
-      const r = await probeImap(im, { user: winner.user, pass });
+      const r = await probeImap(im, { user: im.user || winner.user, pass: imapPassToTest });
       if (r.ok && r.sentFolder) {
         imapInfo = { host: im.host, port: im.port, secure: im.secure, user: im.user || winner.user };
         sentFolder = r.sentFolder;
