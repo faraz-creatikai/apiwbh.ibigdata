@@ -69,7 +69,7 @@ export const probeImap = async (imap, { user, pass }) => {
       SENT_NAMES.map((n) => boxes.find((b) => b.path.toLowerCase() === n)).find(Boolean);
     return { ok: true, sentFolder: sent?.path || null };
   } catch (err) {
-    return { ok: false, message: err.message };
+    return { ok: false, message: err.message, authFailed: !!err.authenticationFailed };
   } finally {
     try { await client.logout(); } catch { /* ignore */ }
     try { client.close(); } catch { /* ignore */ }
@@ -82,6 +82,7 @@ const FAIL_MESSAGES = {
   BASIC_AUTH_DISABLED: "The mail server has switched off password login (SMTP basic authentication) for this account.",
   TLS_CERT_MISMATCH: "The mail server's security certificate does not match its hostname, so we refused to send your password to it.",
   UNREACHABLE: "Could not connect to a mail server for this address.",
+  IMAP_FAILED: "Could not sign in to the IMAP server (inbox).",
 };
 
 const failure = (code, plan, extra = {}) => ({
@@ -152,24 +153,55 @@ export const detectAndVerify = async ({ email, password, advanced }) => {
     return failure("UNREACHABLE", plan, { tried });
   }
 
-  /* ---- Sent-folder saving (optional, never blocks connecting) ---- */
+  /* ---- IMAP: inbox + Sent-folder copies ----
+   * Auto-detected by default. IMAP settings typed by the admin (advanced section) win over detection.
+   * A failed auto-detected IMAP never blocks connecting (sending still works); a failed CUSTOM one does,
+   * because the admin typed it on purpose and would otherwise get a silently empty inbox. */
   const warnings = [...plan.warnings];
   let imapInfo = null;
   let sentFolder = null;
 
-  if (!plan.autoSavesSent) {
-    for (const im of winner.group.imap) {
-      try { await assertPublicHost(im.host); } catch { continue; }
-      const r = await probeImap(im, { user: winner.user, pass });
-      if (r.ok && r.sentFolder) {
-        imapInfo = { host: im.host, port: im.port, secure: im.secure, user: im.user || winner.user };
-        sentFolder = r.sentFolder;
-        break;
+  const imapPort = Number(advanced?.imapPort) || 993;
+  const customImap = advanced?.imapHost
+    ? {
+        host: String(advanced.imapHost).trim(),
+        port: imapPort,
+        secure: imapPort !== 143, // 143 = STARTTLS, everything else = implicit TLS
+        user: advanced.imapUser ? String(advanced.imapUser).trim() : undefined,
       }
+    : null;
+  const customImapPass = customImap && advanced.imapPass ? String(advanced.imapPass) : null;
+  const imapPassword = customImapPass ? (plan.stripPasswordSpaces ? customImapPass.replace(/\s+/g, "") : customImapPass) : pass;
+
+  let imapProblem = null;
+  for (const im of customImap ? [customImap] : winner.group.imap) {
+    try {
+      await assertPublicHost(im.host);
+    } catch (e) {
+      imapProblem = e.code === "PRIVATE_HOST" ? `${im.host} points to a private address, so it was blocked.` : `${im.host} could not be found.`;
+      continue;
     }
-    if (!imapInfo) {
-      warnings.push("Emails will send normally, but copies could not be saved to the Sent folder (IMAP login or Sent folder was not found).");
+    const r = await probeImap(im, { user: winner.user, pass: imapPassword });
+    if (r.ok) {
+      imapInfo = { host: im.host, port: im.port, secure: im.secure, user: im.user || winner.user };
+      sentFolder = r.sentFolder; // may be null: the inbox still works, only Sent copies are off
+      imapProblem = null;
+      break;
     }
+    imapProblem = r.authFailed ? "The IMAP server rejected the login." : `Could not connect to ${im.host}:${im.port}.`;
+  }
+
+  if (customImap && !imapInfo) {
+    return { ...failure("IMAP_FAILED", plan, { tried }), message: `${imapProblem} Check the IMAP server, port, username and password.` };
+  }
+  if (!imapInfo) {
+    warnings.push(
+      plan.autoSavesSent
+        ? "Emails will send normally, but the inbox could not be connected (IMAP login failed). You can enter the IMAP settings manually."
+        : "Emails will send normally, but the inbox and copies in the Sent folder could not be set up (IMAP login failed). You can enter the IMAP settings manually."
+    );
+  } else if (!sentFolder && !plan.autoSavesSent) {
+    warnings.push("Your inbox is connected, but copies could not be saved to the Sent folder (the Sent folder was not found).");
   }
 
   return {
@@ -179,9 +211,11 @@ export const detectAndVerify = async ({ email, password, advanced }) => {
     source: plan.source,
     smtp: { host: winner.cand.host, port: winner.cand.port, secure: winner.cand.secure, user: winner.user },
     imap: imapInfo,
-    saveToSent: !!imapInfo,
+    // providers that store sent mail themselves (Gmail, Microsoft 365) must NOT get a second copy from us
+    saveToSent: !plan.autoSavesSent && !!imapInfo && !!sentFolder,
     sentFolder,
     password: pass, // the (possibly space-stripped) password that actually worked — caller encrypts it
+    imapPass: customImapPass ? imapPassword : null, // only when the admin typed a separate IMAP password — caller encrypts it
     warnings,
     tried,
   };

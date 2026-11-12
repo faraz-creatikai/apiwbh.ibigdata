@@ -1,4 +1,3 @@
-
 import nodemailer from "nodemailer";
 import { decryptSecret } from "./emailCrypto.js";
 import { buildSmtpOptions } from "./emailConnect.js";
@@ -55,6 +54,7 @@ export const getAdminMailer = async (adminId) => {
   if (!entry || entry.stamp !== stamp) {
     if (entry) closeEntry(entry);
     const pass = decryptSecret(row.smtpPassEnc);
+    const imapPass = row.imapPassEnc ? decryptSecret(row.imapPassEnc) : pass; // separate IMAP password if the admin set one
     const transporter = nodemailer.createTransport(
       buildSmtpOptions(
         { host: row.smtpHost, port: row.smtpPort, secure: row.smtpSecure },
@@ -71,7 +71,7 @@ export const getAdminMailer = async (adminId) => {
         fromName: row.fromName,
         saveToSent: row.saveToSent && !!row.imapHost && !!row.sentFolder,
         imap: row.imapHost
-          ? { host: row.imapHost, port: row.imapPort, secure: row.imapSecure, user: row.imapUser || row.smtpUser, pass, folder: row.sentFolder }
+          ? { host: row.imapHost, port: row.imapPort, secure: row.imapSecure, user: row.imapUser || row.smtpUser, pass: imapPass, folder: row.sentFolder }
           : null,
       },
     };

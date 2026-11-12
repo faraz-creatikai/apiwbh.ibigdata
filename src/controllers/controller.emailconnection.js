@@ -10,18 +10,28 @@ import { sendEmail } from "../config/mailer.js";
 /* Only one detection per admin at a time (it opens outbound connections). */
 const inFlight = new Set();
 
+// blank form fields arrive as "" -> treat them as "not provided"
+const blank = (v) => (typeof v === "string" && v.trim() === "" ? undefined : v);
+const optText = (max) => z.preprocess(blank, z.string().trim().max(max).optional());
+const optPort = z.preprocess(blank, z.coerce.number().int().min(1).max(65535).optional());
+
 const bodySchema = z.object({
   email: z.string().trim().email("Enter a valid email address").max(254),
   password: z.string().min(1, "Password is required").max(512),
   fromName: z.string().trim().max(100).optional(),
-  // Fallback only — shown by the UI when detection answers needsAdvanced:true
+  // Everything here is optional: a blank part is auto-detected. SMTP and IMAP can be set independently.
   advanced: z
     .object({
-      smtpHost: z.string().trim().min(1).max(255),
-      smtpPort: z.coerce.number().int().min(1).max(65535),
-      smtpUser: z.string().trim().max(254).optional(),
-      imapHost: z.string().trim().max(255).optional(),
-      imapPort: z.coerce.number().int().min(1).max(65535).optional(),
+      smtpHost: optText(255),
+      smtpPort: optPort,
+      smtpUser: optText(254),
+      imapHost: optText(255),
+      imapPort: optPort,
+      imapUser: optText(254),
+      imapPass: z.preprocess(blank, z.string().max(512).optional()),
+    })
+    .refine((a) => a.imapHost || (!a.imapUser && !a.imapPass), {
+      message: "Enter the IMAP server to use a custom IMAP username or password",
     })
     .optional(),
 });
@@ -83,7 +93,7 @@ export const testEmailConnection = async (req, res, next) => {
     if (!result) return next(new ApiError(429, "A connection check is already running. Please wait a moment."));
     if (!result.ok) return res.status(422).json({ success: false, ...result });
 
-    const { password, tried, ...safe } = result; // eslint-disable-line no-unused-vars
+    const { password, imapPass, tried, ...safe } = result; // eslint-disable-line no-unused-vars
     res.json({ success: true, detected: safe });
   } catch (err) {
     next(new ApiError(500, err.message));
@@ -116,6 +126,7 @@ export const connectEmail = async (req, res, next) => {
       imapPort: result.imap?.port ?? null,
       imapSecure: result.imap?.secure ?? null,
       imapUser: result.imap?.user ?? null,
+      imapPassEnc: result.imapPass ? encryptSecret(result.imapPass) : null, // null = use the mailbox password for IMAP
       sentFolder: result.sentFolder ?? null,
       isActive: true,
       status: "connected",
@@ -123,12 +134,23 @@ export const connectEmail = async (req, res, next) => {
       lastError: null,
     };
 
+    const prev = await prisma.adminEmailConfig.findUnique({
+      where: { adminId: req.admin.id },
+      select: { email: true, imapHost: true, imapPort: true, imapUser: true },
+    });
     const row = await prisma.adminEmailConfig.upsert({
       where: { adminId: req.admin.id },
       create: { adminId: req.admin.id, ...fields },
       update: fields,
     });
     invalidateAdminMailer(req.admin.id);
+
+    // A different mailbox / inbox server: the stored messages and the UID cursor belong to the old one.
+    // (Some servers, e.g. Gmail, reuse the same UIDVALIDITY, so the sync could not notice the switch by itself.)
+    if (prev && (prev.email !== row.email || prev.imapHost !== row.imapHost || prev.imapPort !== row.imapPort || prev.imapUser !== row.imapUser)) {
+      await prisma.emailMessage.deleteMany({ where: { adminId: req.admin.id } }).catch((e) => console.error("inbox reset:", e.message));
+      await prisma.emailInboxSyncState.deleteMany({ where: { adminId: req.admin.id } }).catch((e) => console.error("inbox reset:", e.message));
+    }
 
     res.status(200).json({
       success: true,

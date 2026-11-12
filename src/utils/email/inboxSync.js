@@ -41,7 +41,7 @@ const openImap = async (row) => {
     host: row.imapHost,
     port: row.imapPort,
     secure: !!row.imapSecure,
-    auth: { user: row.imapUser || row.smtpUser, pass: decryptSecret(row.smtpPassEnc) },
+    auth: { user: row.imapUser || row.smtpUser, pass: decryptSecret(row.imapPassEnc || row.smtpPassEnc) },
     logger: false,
     connectionTimeout: 15_000,
     greetingTimeout: 15_000,
