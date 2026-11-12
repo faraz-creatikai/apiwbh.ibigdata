@@ -12,6 +12,7 @@ import { z } from "zod";
 import prisma from "../config/prismaClient.js";
 import ApiError from "../utils/ApiError.js";
 import { getCustomerAccessFilter } from "./controller.customer.js";
+import { trackingForRuns } from "./controller.outreachCampaignRun.js";
 
 const CHANNELS = ["email", "whatsapp_baileys", "whatsapp_meta", "ai_calling"];
 // Most customers one campaign may target. Static for now; later this can come from your tool limit.
@@ -127,6 +128,7 @@ export const createCampaign = async (req, res, next) => {
 };
 
 // GET /campaigns?page=&limit=&search=
+// GET /campaigns?page=&limit=&search=
 export const getCampaigns = async (req, res, next) => {
     try {
         const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -149,7 +151,47 @@ export const getCampaigns = async (req, res, next) => {
                 take: limit,
             }),
         ]);
-        res.json({ success: true, total, currentPage: page, totalPages: Math.ceil(total / limit), data });
+
+        if (data.length === 0) {
+            return res.json({ success: true, total, currentPage: page, totalPages: 0, data });
+        }
+
+        // Fetch all runs for the campaigns on this page to calculate lifetime tracking stats
+        const campaignIds = data.map((c) => c.id);
+        const runs = await prisma.outreachCampaignRun.findMany({
+            where: { campaignId: { in: campaignIds } },
+            select: { id: true, campaignId: true, summary: true }
+        });
+
+        // Use your existing trackingForRuns helper to get the detailed metrics for these runs
+        const tmap = await trackingForRuns(runs);
+
+        // Map the stats back to the parent campaigns
+        const enrichedData = data.map((campaign) => {
+            const campaignRuns = runs.filter(r => r.campaignId === campaign.id);
+            const lifetimeStats = { sent: 0, failed: 0, delivered: 0, opened: 0, replied: 0 };
+
+            campaignRuns.forEach(run => {
+                const runTracking = tmap.get(run.id);
+                if (!runTracking) return;
+
+                // Sum up stats across all channels in this run
+                Object.values(runTracking).forEach((channelStats) => {
+                    lifetimeStats.sent += channelStats.sent || 0;
+                    lifetimeStats.failed += channelStats.failed || 0;
+                    lifetimeStats.delivered += channelStats.delivered || 0;
+                    lifetimeStats.opened += channelStats.opened || 0;
+                    lifetimeStats.replied += channelStats.replied || 0;
+                });
+            });
+
+            return {
+                ...campaign,
+                lifetimeStats
+            };
+        });
+
+        res.json({ success: true, total, currentPage: page, totalPages: Math.ceil(total / limit), data: enrichedData });
     } catch (err) {
         fail(err, next);
     }

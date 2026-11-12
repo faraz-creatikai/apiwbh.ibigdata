@@ -224,6 +224,11 @@ model ChannelMessage {
   repliedAt         DateTime?
   bouncedAt         DateTime?
 
+  runId      String? // OutreachCampaignRun.id, only for campaign sends (no foreign key on purpose)
+  customerId String?
+
+  @@index([runId, channel])
+  @@index([runId, customerId])
   @@index([adminId, channel, sentAt])
   @@index([providerMessageId])
 }

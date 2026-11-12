@@ -3,7 +3,7 @@ import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { ImapFlow } from "imapflow";
 import dotenv from "dotenv";
 import { getAdminMailer } from "../utils/email/AdminMailerConfig.js";
-import crypto from "node:crypto"; 
+import crypto from "node:crypto";
 import { recordSend, trackingPixel } from "../utils/channelTracking.js";
 
 
@@ -70,7 +70,12 @@ const saveToSentFolder = async (rawEmail, imap = null) => {
 // 👇 options can also carry { text, attachments, inReplyTo, references, messageId } (inbox compose / reply).
 export const sendEmail = async (to, subject, html, options = {}) => {
   const trackId = options.track === false ? null : crypto.randomUUID();
-  const track = (extra) => trackId && recordSend({ id: trackId, adminId: options.adminId ?? null, channel: "email", source: options.source || "other", recipient: String(to), ...extra });
+  const track = (extra) => trackId && recordSend({
+    id: trackId,
+    adminId: options.adminId ?? null, channel: "email", source: options.source || "other",
+    runId: options.runId ?? null, customerId: options.customerId ?? null,   
+    recipient: String(to), ...extra
+  });
   try {
     const adminMailer = options?.adminId ? await getAdminMailer(options.adminId) : null;
 

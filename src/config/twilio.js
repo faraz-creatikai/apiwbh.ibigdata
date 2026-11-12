@@ -224,14 +224,15 @@ export const sendBaileysWhatsApp = async (adminId, to, message, imageUrl = null,
     const result = await sock.sendMessage(jid, content);
     recordSend({
       adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
+      runId: extra.runId ?? null, customerId: extra.customerId ?? null,
       providerMessageId: result?.key?.id, status: "sent"
     });
 
     // If it's a location, send the caption text separately as a follow-up message
     if (mediaType === "location" && message) {
-      await delay(500);
-      await sock.sendMessage(jid, { text: message });
-    }
+  await delay(500);
+  await sock.sendMessage(jid, { text: message }).catch(() => {});
+}
 
     console.log("✅ WhatsApp sent:", result?.key?.id);
     return result;
@@ -239,6 +240,7 @@ export const sendBaileysWhatsApp = async (adminId, to, message, imageUrl = null,
     console.error("❌ WhatsApp error:", error.message);
     recordSend({
       adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
+      runId: extra.runId ?? null, customerId: extra.customerId ?? null,
       status: "failed", error: String(error.message).slice(0, 500)
     });
     throw error;
@@ -336,8 +338,7 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
     let result;
     try {
       result = await sock.sendMessage(jid, content);
-      recordSend({ adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
-             providerMessageId: result?.key?.id, status: "sent" });
+      
     } catch (sendError) {
       // If it STILL throws a connection closed (e.g. timeout during a large file upload), retry once.
       if (sendError.message.toLowerCase().includes('close') || sendError.message.toLowerCase().includes('timeout')) {
@@ -354,6 +355,13 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
       }
     }
 
+    recordSend({
+        adminId, channel: "whatsapp_baileys", source: extra.source || "other",
+        runId: extra.runId ?? null, customerId: extra.customerId ?? null,
+        recipient: String(to),
+        providerMessageId: result?.key?.id, status: "sent"
+      });
+
     // Follow up location with caption if needed safely
     if (mediaType === "location" && message) {
       await delay(500);
@@ -363,8 +371,11 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
     return result;
   } catch (error) {
     console.error("❌ WhatsApp Direct Send error:", error.message);
-    recordSend({ adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
-             status: "failed", error: String(error.message).slice(0, 500) });
+    recordSend({
+      adminId, channel: "whatsapp_baileys", source: extra.source || "other", recipient: String(to),
+      runId: extra.runId ?? null, customerId: extra.customerId ?? null,
+      status: "failed", error: String(error.message).slice(0, 500)
+    });
     throw error;
   }
 };

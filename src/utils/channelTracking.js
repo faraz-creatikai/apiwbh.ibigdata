@@ -9,7 +9,7 @@ export const recordSend = (data) =>
   prisma.channelMessage.create({ data }).catch((e) => console.error("tracking failed:", e.message));
 
 export const trackingPixel = (id) => {
-  const base = `${serverUrl}/api/channel-tracking`; // TODO: use public host
+  const base = `${serverUrl}/api/channel-tracking`; // must be a PUBLIC https host, or Gmail can never load the pixel
   return base ? `<img src="${base}/o/${id}.gif" width="1" height="1" alt="" style="border:0;width:1px;height:1px;">` : "";
 };
 
@@ -21,36 +21,65 @@ export const trackOpen = async (id) => {
 };
 
 /* ───────── email: replies + bounces (run after each inbox sync) ───────── */
+// Message-IDs are compared without <>, spaces and case, because the mailer stores "<id@host>"
+// while the inbox sync may store the References header in another shape.
+const bare = (s) => String(s || "").replace(/[<>\s]/g, "").toLowerCase();
+// Fallback matching (same sender + "Re:" subject) can over-count in the overall stats. Turn on only if exact matching fails.
+const REPLY_FALLBACK = false;
+const isReplySubject = (s) => /^\s*(re|aw|sv|antw)\s*:/i.test(s || "");
+
 export const trackEmailInbox = async (adminId) => {
   const since = new Date(Date.now() - 14 * DAY);
   const pending = await prisma.channelMessage.findMany({
     where: {
-      adminId, channel: "email", status: "sent", sentAt: { gte: since }, providerMessageId: { not: null },
+      adminId, channel: "email", status: "sent", sentAt: { gte: since },
       OR: [{ repliedAt: null }, { bouncedAt: null }],
     },
-    select: { id: true, providerMessageId: true, repliedAt: true, bouncedAt: true },
+    select: { id: true, recipient: true, sentAt: true, providerMessageId: true, repliedAt: true, bouncedAt: true },
+    orderBy: { sentAt: "desc" }, // newest send first: a reply is credited to the latest message we sent before it
     take: 500,
   });
   if (!pending.length) return;
 
-  // replies: their References header contains the Message-ID we sent
-  const withRefs = await prisma.emailMessage.findMany({
-    where: { adminId, folder: "INBOX", date: { gte: since }, refs: { not: null } },
-    select: { refs: true }, take: 1000,
-  });
-  // bounces: mail from the mail system that quotes our Message-ID
-  const bounces = await prisma.emailMessage.findMany({
-    where: { adminId, folder: "INBOX", date: { gte: since }, OR: [{ fromEmail: { contains: "mailer-daemon" } }, { fromEmail: { contains: "postmaster" } }] },
-    select: { bodyText: true }, take: 200,
-  });
+  const fromMailSystem = { OR: [{ fromEmail: { contains: "mailer-daemon" } }, { fromEmail: { contains: "postmaster" } }] };
+  const base = { adminId, folder: "INBOX", date: { gte: since } };
+  const [inbox, bounces] = await Promise.all([
+    prisma.emailMessage.findMany({
+      where: { ...base, NOT: fromMailSystem },
+      select: { fromEmail: true, subject: true, date: true, refs: true },
+      orderBy: { date: "desc" }, take: 2000,
+    }),
+    prisma.emailMessage.findMany({
+      where: { ...base, ...fromMailSystem },
+      select: { date: true, bodyText: true },
+      orderBy: { date: "desc" }, take: 200,
+    }),
+  ]);
+  const withRefs = inbox.filter((m) => m.refs).map((m) => ({ m, refs: bare(m.refs) }));
+  const bounceBodies = bounces.map((b) => ({ b, text: bare(b.bodyText) }));
+  const claimed = new Set(); // one incoming mail answers one send
 
-  const now = new Date();
   for (const p of pending) {
-    if (!p.repliedAt && withRefs.some((m) => m.refs.includes(p.providerMessageId))) {
-      await prisma.channelMessage.update({ where: { id: p.id }, data: { repliedAt: now } });
-    } else if (!p.bouncedAt && bounces.some((m) => m.bodyText?.includes(p.providerMessageId))) {
-      await prisma.channelMessage.update({ where: { id: p.id }, data: { bouncedAt: now } });
+    const rcpt = String(p.recipient || "").trim().toLowerCase();
+    const id = bare(p.providerMessageId);
+    const data = {};
+
+    if (!p.repliedAt) {
+      // 1) exact: the reply's References header contains the Message-ID we sent
+      let hit = id ? withRefs.find((x) => !claimed.has(x.m) && x.refs.includes(id))?.m : null;
+      // 2) fallback, for SMTP servers that replace our Message-ID (Gmail does): same sender, later date, "Re:" subject
+      if (!hit && REPLY_FALLBACK) hit = inbox.find((m) => !claimed.has(m) && m.fromEmail === rcpt && m.date > p.sentAt && isReplySubject(m.subject));
+      if (hit) { claimed.add(hit); data.repliedAt = hit.date; }
     }
+
+    if (!p.bouncedAt) {
+      const hit = bounceBodies.find(
+        ({ b, text }) => (id && text.includes(id)) || (rcpt && b.date > p.sentAt && b.date - p.sentAt < DAY && text.includes(bare(rcpt)))
+      );
+      if (hit) data.bouncedAt = hit.b.date;
+    }
+
+    if (Object.keys(data).length) await prisma.channelMessage.update({ where: { id: p.id }, data });
   }
 };
 
