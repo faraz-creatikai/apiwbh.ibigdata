@@ -76,6 +76,7 @@ export const sendEmail = async (to, subject, html, options = {}) => {
     runId: options.runId ?? null, customerId: options.customerId ?? null,   
     recipient: String(to), ...extra
   });
+  
   try {
     const adminMailer = options?.adminId ? await getAdminMailer(options.adminId) : null;
 
@@ -83,14 +84,26 @@ export const sendEmail = async (to, subject, html, options = {}) => {
       ? { name: adminMailer.fromName, address: adminMailer.email }
       : `"Aiworksforce Team" <${process.env.SMTP_USER}>`;
     const envelopeFrom = adminMailer ? adminMailer.email : process.env.SMTP_USER;
+    
     // always set our own Message-ID so replies and bounces can be matched to it later
     const messageId = options.messageId || `<${crypto.randomUUID()}@${String(envelopeFrom).split("@")[1] || "localhost"}>`;
+
+    // 👇 FIX: Inject pixel INSIDE the body tag so Gmail doesn't strip it
+    let finalHtml = html;
+    if (trackId) {
+      const pixel = trackingPixel(trackId);
+      if (finalHtml.includes('</body>')) {
+        finalHtml = finalHtml.replace('</body>', `${pixel}</body>`);
+      } else {
+        finalHtml += pixel;
+      }
+    }
 
     const mailOptions = {
       from: fromAddress,
       to,
       subject,
-      html: trackId ? html + trackingPixel(trackId) : html,
+      html: finalHtml, // 👈 Use the safely injected HTML here
       messageId,
       ...(options.text && { text: options.text }),
       ...(options.attachments?.length && { attachments: options.attachments }),
