@@ -104,24 +104,31 @@ export const trackingForRuns = async (runs) => {
         }
         out.set(r.id, per);
     }
+    
     const ids = runs.map((r) => r.id);
     if (!ids.length) return out;
 
-    const rows = await prisma.channelMessage.groupBy({
-        by: ["runId", "channel", "status"],
+    // FIX: Replaced Prisma's buggy groupBy _count with an in-memory aggregation.
+    // This safely counts non-null DateTime fields across all databases.
+    const messages = await prisma.channelMessage.findMany({
         where: { runId: { in: ids }, status: "sent" },
-        _count: { _all: true, deliveredAt: true, openedAt: true, repliedAt: true, bouncedAt: true },
+        select: { runId: true, channel: true, deliveredAt: true, openedAt: true, repliedAt: true, bouncedAt: true }
     });
-    for (const r of rows) {
-        const t = (out.get(r.runId)[r.channel] ||= emptyT());
-        t.tracked += r._count._all;
-        t.delivered += r._count.deliveredAt;
-        t.opened += r._count.openedAt;
-        t.replied += r._count.repliedAt;
-        t.bounced += r._count.bouncedAt;
+
+    for (const m of messages) {
+        const t = (out.get(m.runId)[m.channel] ||= emptyT());
+        t.tracked += 1;
+        if (m.deliveredAt) t.delivered += 1;
+        if (m.openedAt) t.opened += 1;
+        if (m.repliedAt) t.replied += 1;
+        if (m.bouncedAt) t.bounced += 1;
     }
-    // SMTP has no delivery receipt: email delivered = sent minus bounced (same rule as the Overview tab)
-    for (const per of out.values()) if (per.email) per.email.delivered = Math.max(0, per.email.sent - per.email.bounced);
+
+    // SMTP has no delivery receipt: email delivered = sent minus bounced
+    for (const per of out.values()) {
+        if (per.email) per.email.delivered = Math.max(0, per.email.sent - per.email.bounced);
+    }
+    
     return out;
 };
 

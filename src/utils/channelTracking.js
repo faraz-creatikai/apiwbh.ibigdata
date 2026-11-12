@@ -14,8 +14,10 @@ export const trackingPixel = (id) => {
 };
 
 /* ───────── email: open (called by the public pixel route) ───────── */
+/* ───────── email: open (called by the public pixel route) ───────── */
 export const trackOpen = async (id) => {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return;
+  // FIX: Changed {36} to {24,36} to allow 24-character database IDs to pass!
+  if (!/^[0-9a-f-]{24,36}$/i.test(id)) return;
   await prisma.channelMessage.updateMany({ where: { id, channel: "email" }, data: { openCount: { increment: 1 } } });
   await prisma.channelMessage.updateMany({ where: { id, channel: "email", openedAt: null }, data: { openedAt: new Date() } });
 };
