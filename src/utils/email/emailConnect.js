@@ -60,7 +60,7 @@ export const probeImap = async (imap, { user, pass }) => {
     greetingTimeout: 10_000,
     socketTimeout: 20_000,
   });
-  client.on("error", () => { }); // unhandled ImapFlow 'error' events would crash the process
+  client.on("error", () => {}); // unhandled ImapFlow 'error' events would crash the process
   try {
     await client.connect();
     const boxes = await client.list();
@@ -100,7 +100,7 @@ const failure = (code, plan, extra = {}) => ({
  * Nothing is ever saved by this function; it returns either a fully verified
  * config or a precise reason why not.
  */
-export const detectAndVerify = async ({ email, password, imapPassword, advanced }) => {
+export const detectAndVerify = async ({ email, password, advanced }) => {
   email = String(email).trim().toLowerCase();
 
   const plan = advanced?.smtpHost ? manualPlan(advanced) : await resolvePlan(email);
@@ -158,11 +158,9 @@ export const detectAndVerify = async ({ email, password, imapPassword, advanced 
   let sentFolder = null;
 
   if (!plan.autoSavesSent) {
-    const imapPassToTest = imapPassword ? String(imapPassword).trim() : pass;
-
     for (const im of winner.group.imap) {
       try { await assertPublicHost(im.host); } catch { continue; }
-      const r = await probeImap(im, { user: im.user || email, pass: imapPassToTest });
+      const r = await probeImap(im, { user: winner.user, pass });
       if (r.ok && r.sentFolder) {
         imapInfo = { host: im.host, port: im.port, secure: im.secure, user: im.user || winner.user };
         sentFolder = r.sentFolder;

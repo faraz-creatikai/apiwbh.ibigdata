@@ -279,7 +279,6 @@ model AdminEmailConfig {
   smtpSecure  Boolean // true = implicit TLS (465), false = STARTTLS
   smtpUser    String
   smtpPassEnc String  @db.Text // AES-256-GCM encrypted, never returned by the API
-  imapPassEnc String?
 
   // optional: save a copy into the Sent folder via IMAP (auto-detected)
   saveToSent Boolean  @default(false)
