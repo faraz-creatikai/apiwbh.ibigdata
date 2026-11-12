@@ -122,7 +122,13 @@ export const trackWhatsAppReply = async (adminId, m, sock) => {
   if (last) await prisma.channelMessage.update({ where: { id: last.id }, data: { repliedAt: new Date() } });
 };
 /* ───────── numbers for the Overview cards ───────── */
+/* ───────── numbers for the Overview cards ───────── */
 export const channelStats = async (admin, channel, days = 30) => {
+  // FIX: Instantly link downloaded replies to campaigns before counting
+  if (channel === "email") {
+    await trackEmailInbox(admin.id).catch(() => {});
+  }
+
   const where = { channel, sentAt: { gte: new Date(Date.now() - days * DAY) }, ...(seesAll(admin) ? {} : { adminId: admin.id }) };
   const c = (extra) => prisma.channelMessage.count({ where: { ...where, ...extra } });
   const [sent, failed, delivered, opened, replied, bounced] = await Promise.all([

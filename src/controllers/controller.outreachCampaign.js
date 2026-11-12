@@ -13,6 +13,8 @@ import prisma from "../config/prismaClient.js";
 import ApiError from "../utils/ApiError.js";
 import { getCustomerAccessFilter } from "./controller.customer.js";
 import { trackingForRuns } from "./controller.outreachCampaignRun.js";
+import { trackEmailInbox } from "../utils/channelTracking.js";
+import { syncInbox } from "../utils/email/inboxSync.js";
 
 const CHANNELS = ["email", "whatsapp_baileys", "whatsapp_meta", "ai_calling"];
 // Most customers one campaign may target. Static for now; later this can come from your tool limit.
@@ -131,6 +133,8 @@ export const createCampaign = async (req, res, next) => {
 // GET /campaigns?page=&limit=&search=
 export const getCampaigns = async (req, res, next) => {
     try {
+        await trackEmailInbox(req.admin.id).catch(() => {});
+        syncInbox(req.admin.id).catch(() => {});
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
         const search = String(req.query.search || "").trim();

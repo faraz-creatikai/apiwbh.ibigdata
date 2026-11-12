@@ -29,6 +29,8 @@ import { replacePlaceholders } from "./controller.messages.js";
 import { getCustomerAccessFilter } from "./controller.customer.js";
 import { templateAttachments, removeAttachments, htmlToText } from "./controller.emailCompose.js";
 import { ownedWhere } from "./controller.outreachCampaign.js";
+import { trackEmailInbox } from "../utils/channelTracking.js";
+import { syncInbox } from "../utils/email/inboxSync.js";
 
 /* ================= SETTINGS ================= */
 
@@ -423,6 +425,11 @@ export const getCampaignRuns = async (req, res, next) => {
         const campaign = await ownedCampaign(req);
         if (!campaign) return next(new ApiError(404, "Campaign not found"));
 
+        // FIX: Reconcile replies currently in the DB instantly
+        await trackEmailInbox(campaign.createdById).catch(() => {});
+        // FIX: Non-blocking background IMAP sync to fetch new emails from Hostinger/Gmail
+        syncInbox(campaign.createdById).catch(() => {});
+
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
         const where = { campaignId: campaign.id };
@@ -445,6 +452,9 @@ export const getCampaignRun = async (req, res, next) => {
         if (!campaign) return next(new ApiError(404, "Campaign not found"));
         const run = await prisma.outreachCampaignRun.findFirst({ where: { id: req.params.runId, campaignId: campaign.id } });
         if (!run) return next(new ApiError(404, "Run not found"));
+        // FIX: Reconcile replies and trigger background sync here too
+        await trackEmailInbox(campaign.createdById).catch(() => {});
+        syncInbox(campaign.createdById).catch(() => {});
         await healRun(run, campaign.createdById);
 
         const page = Math.max(1, parseInt(req.query.page) || 1);
