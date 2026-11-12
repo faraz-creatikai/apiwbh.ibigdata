@@ -70,13 +70,14 @@ app.use(
 app.use(express.json());
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
+app.use("/api/channel-tracking", channelTrackingRoutes);
+
 // Routes
 app.use("/api/brand", brandRoutes);
 app.use("/api/sarvam", sarvamCallingRoutes);
 app.use("/api/user", requestUserRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/outreach-campaign", outreachCampaignRoute);
-app.use("/api/channel-tracking", channelTrackingRoutes);
 app.use("/api/mas/customerFields", customerFieldsRoutes);
 app.use("/api/mas/cam", campaignRoutes);
 app.use("/api/mas/type", typeRoutes);
