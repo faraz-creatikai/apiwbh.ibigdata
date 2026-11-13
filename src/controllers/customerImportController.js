@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import prisma from "../config/prismaClient.js"; // your Prisma client instance
 import ApiError from "../utils/ApiError.js";
 import { logActivity } from "../utils/activityLogger.js";
+import { parseContactCell } from "../utils/phoneParser.js";
 
 // ----------------------------------------------------
 const __filename = fileURLToPath(import.meta.url);
@@ -33,131 +34,6 @@ const keyMap = {
   url: "URL",
 };
 
-// code -> valid national-number lengths (some countries allow a small range)
-const COUNTRY_CODES = [
-  { code: "971", lengths: [9] },
-  { code: "966", lengths: [9] },
-  { code: "974", lengths: [8] },
-  { code: "973", lengths: [8] },
-  { code: "968", lengths: [8] },
-  { code: "965", lengths: [7, 8] },
-  { code: "977", lengths: [10] },
-  { code: "880", lengths: [10] },
-  { code: "234", lengths: [10] },
-  { code: "94", lengths: [9] },
-  { code: "92", lengths: [10] },
-  { code: "91", lengths: [10] },
-  { code: "86", lengths: [11] },
-  { code: "65", lengths: [8] },
-  { code: "63", lengths: [10] },
-  { code: "62", lengths: [9, 10, 11] },
-  { code: "61", lengths: [9] },
-  { code: "60", lengths: [9, 10] },
-  { code: "49", lengths: [10, 11] },
-  { code: "44", lengths: [10] },
-  { code: "33", lengths: [9] },
-  { code: "27", lengths: [9] },
-  { code: "20", lengths: [10] },
-  { code: "1", lengths: [10] },
-].sort((a, b) => b.code.length - a.code.length); // longest code checked first
-
-const DEFAULT_COUNTRY_CODE = "91"; // assume domestic when no code is present
-const MIN_LOCAL_LEN = 6;
-const MAX_LOCAL_LEN = 11;
-
-// Add a parameter to know if we detected a '+' sign
-// Returns { countryCode, number } from a raw digit string
-const splitCountryCode = (digits, hasExplicitCountryCode = false) => {
-  if (!digits) return { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
-
-  // 1. MATCH KNOWN COUNTRY CODES FIRST
-  // This correctly identifies numbers like "18475970044" (US) or "919876543210" (India)
-  // even if the user forgot to include the '+' symbol.
-  for (const { code, lengths } of COUNTRY_CODES) {
-    if (digits.startsWith(code)) {
-      const rest = digits.slice(code.length);
-
-      let cleanedRest = rest;
-      if (cleanedRest.startsWith("0")) {
-        cleanedRest = cleanedRest.replace(/^0+/, "");
-      }
-
-      if (lengths.includes(rest.length)) {
-        return { countryCode: code, number: rest };
-      } else if (lengths.includes(cleanedRest.length)) {
-        return { countryCode: code, number: cleanedRest };
-      }
-    }
-  }
-
-  // 2. DOMESTIC FALLBACK
-  // If no country code matches perfectly, and there is no '+' sign, assume it's domestic (India).
-  if (!hasExplicitCountryCode && digits.length >= MIN_LOCAL_LEN && digits.length <= MAX_LOCAL_LEN) {
-    return { countryCode: DEFAULT_COUNTRY_CODE, number: digits };
-  }
-
-  // 3. UNKNOWN LONG NUMBER FALLBACK
-  // If it's a very long number with an unrecognized country code, grab the last 10 digits.
-  if (digits.length > MAX_LOCAL_LEN) {
-    const guessLen = 10;
-    const number = digits.slice(-guessLen);
-    const countryCode = digits.slice(0, digits.length - guessLen) || DEFAULT_COUNTRY_CODE;
-    return { countryCode, number };
-  }
-
-  return { countryCode: DEFAULT_COUNTRY_CODE, number: digits };
-};
-
-
-
-// Only relevant if you have countries whose national length overlaps
-// another country's *code+shorter-number* combo. Skip if not needed.
-const isAmbiguousLength = () => false;
-
-const cleanNumber = (num) => {
-  if (!num) return { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
-
-  const strNum = String(num).trim();
-
-  // Check for the '+' sign or '00' international prefix before we strip characters
-  const hasPlus = strNum.startsWith("+") || strNum.startsWith("00");
-
-  // Remove ALL non-digit characters (strips spaces, -, _, (), alphabets, and symbols)
-  let digits = strNum.replace(/\D/g, "");
-
-  // If they used '00' for international dialling, strip it so the country code matches perfectly
-  if (strNum.startsWith("00")) {
-    digits = digits.substring(2);
-  }
-
-  // If it's a domestic number starting with 0 (e.g. 08787349821), strip the zero
-  // ONLY if stripping it results in a valid local length number.
-  if (!hasPlus && digits.startsWith("0")) {
-    const withoutZero = digits.replace(/^0+/, "");
-    if (withoutZero.length >= MIN_LOCAL_LEN && withoutZero.length <= MAX_LOCAL_LEN) {
-      digits = withoutZero;
-    }
-  }
-
-  // Pass the boolean flag so the splitter knows to look for a country code
-  return splitCountryCode(digits, hasPlus);
-};
-
-// Extract first valid phone number (with its country code) from a raw cell
-const extractNumbers = (raw) => {
-  if (!raw) return { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
-
-  // SPLIT FIX: Removed the hyphen (\-) from the split regex so formatted numbers stay intact.
-  // We only split on comma, semicolon, slash, pipe, or newline.
-  const candidates = String(raw)
-    .split(/[,;/|\n]/)
-    .map(cleanNumber)
-    .filter((n) => n.number.length >= MIN_LOCAL_LEN && n.number.length <= MAX_LOCAL_LEN);
-
-  return candidates[0] || { countryCode: DEFAULT_COUNTRY_CODE, number: "" };
-};
-
-
 // Normalize row keys
 const normalizeKeys = (row, manual = {}) => {
   const out = {};
@@ -177,6 +53,42 @@ const safeTrim = (v) => {
   return String(v).trim();
 };
 
+const friendlyError = (err) => {
+  // Prisma errors are multi-line; the last non-empty line is the useful one
+  const msg = String(err?.message || "Unknown error").trim().split("\n").filter(Boolean).pop() || "Unknown error";
+  return msg.length > 300 ? msg.slice(0, 300) + "…" : msg;
+};
+
+const chunk = (arr, size) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
+const toReportItem = (row, meta, status, reasons = [], warnings = []) => ({
+  rowNumber: meta?.rowNumber ?? null,
+  customerName: row.customerName || "",
+  contactRaw: meta?.phone?.raw ?? "",
+  contactNumber: row.ContactNumber || "",
+  countryCode: row.ContactNumber ? row.CountryCode : "",
+  noContact: !!meta?.phone?.noContact, // contact was the 1010101010 placeholder
+  status, // imported | duplicate | skipped | failed
+  reasons,
+  warnings,
+});
+
+// One flat row for the Excel summary sheets
+const toSheetRow = (item) => ({
+  Row: item.rowNumber ?? "",
+  Name: item.customerName,
+  "Contact in file": item.contactRaw,
+  "Saved as": item.contactNumber ? `+${item.countryCode} ${item.contactNumber}` : "",
+  "No contact number": item.noContact ? "Yes" : "",
+  Status: item.status,
+  Reason: item.reasons.join("; "),
+  Notes: item.warnings.join("; "),
+  "Customer ID": item.id ?? "",
+});
 
 const excelDateToString = (value) => {
   if (!value) return null;
@@ -206,18 +118,22 @@ const excelDateToString = (value) => {
   return null;
 };
 
-
-
-
 // ------------------------------------------------------
 // IMPORT CONTROLLER (with auto-create master records)
 // ------------------------------------------------------
 export const importCustomers = async (req, res, next) => {
+  // delete the uploaded temp file (safe to call more than once)
+  const removeUpload = () => {
+    if (req.file?.path) fs.unlink(req.file.path, () => { });
+  };
+
   try {
     const admin = req.admin;
 
-    if (!req.body.fieldMapping)
+    if (!req.body.fieldMapping) {
+      removeUpload();
       return next(new ApiError(400, "fieldMapping is required"));
+    }
 
     // ----------------------------
     // Parse Manual Mapping
@@ -229,6 +145,7 @@ export const importCustomers = async (req, res, next) => {
         manualMap[key.toLowerCase()] = parsed[key];
       });
     } catch {
+      removeUpload();
       return next(new ApiError(400, "Invalid fieldMapping JSON"));
     }
 
@@ -246,7 +163,13 @@ export const importCustomers = async (req, res, next) => {
       dateNF: "dd-mm-yyyy",
     });
 
-    if (!sheet.length) return next(new ApiError(400, "Empty Excel file"));
+    if (!sheet.length) {
+      removeUpload();
+      return next(new ApiError(400, "Empty Excel file"));
+    }
+
+    // Excel row number (header = row 1). __rowNum__ is 0-based and survives blank-row skipping.
+    const rowNumbers = sheet.map((r, i) => (r.__rowNum__ ?? i + 1) + 1);
 
     // ----------------------------
     // Normalize all rows
@@ -262,13 +185,15 @@ export const importCustomers = async (req, res, next) => {
       activeFields.map((f) => f.Name.toLowerCase())
     );
 
+    const rowMeta = new WeakMap(); // row object -> { rowNumber, phone }   (kept OUT of the row so Prisma never sees it)
 
     // ----------------------------
     // Process rows
     // ----------------------------
-    const processed = normalized.map((r) => {
-      const cleanedContacts = extractNumbers(r.ContactNumber);
-      const { countryCode, number: firstPhone } = extractNumbers(r.ContactNumber);
+    const processed = normalized.map((r, idx) => {
+      const phone = parseContactCell(r.ContactNumber);
+      const countryCode = phone.countryCode;
+      const firstPhone = phone.number; // "" when invalid -> row goes to skipped
 
       const email = safeTrim(r.Email) || null;
 
@@ -315,17 +240,12 @@ export const importCustomers = async (req, res, next) => {
         }
       }
 
-
       let PriceNumber = 0;
       if (r.Price) {
-
-        /*    PriceNumber = Number(
-         r.Price.toString().replace(/[^0-9.]/g, "")
-       ) */
         const raw = r.Price.toString().toLowerCase();
 
         let multiplier = 1;
-        if (raw.includes("thousand") || raw.includes("thousands") || raw.includes("हज़ार")) {
+        if (raw.includes("thousand") || raw.includes("thousands") || raw.includes("हज़ार")) {
           multiplier = 1000;
         }
         else if (raw.includes("lakh") || raw.includes("लाख")) {
@@ -340,9 +260,12 @@ export const importCustomers = async (req, res, next) => {
 
         PriceNumber =
           Number(raw.replace(/[^0-9.]/g, "")) * multiplier;
+
+        // unparseable prices (e.g. "1.5.2", "call us") would give NaN and make Prisma reject the row
+        if (!Number.isFinite(PriceNumber)) PriceNumber = 0;
       }
 
-      return {
+      const out = {
         ...r,
         CustomerFields: customerFields,
         customerName: safeTrim(r.customerName || r.CustomerName || "") || "",
@@ -366,57 +289,91 @@ export const importCustomers = async (req, res, next) => {
         Other: safeTrim(r.Other) || "",
         ReferenceId: safeTrim(r.ReferenceId) || ""
       };
+
+      rowMeta.set(out, { rowNumber: rowNumbers[idx], phone });
+      return out;
     });
 
     // --------------------------------------------------
     // Remove rows missing name or phone
+    // (1010101010 counts as a phone: it is the "no contact number" placeholder)
     // --------------------------------------------------
     const valid = processed.filter((r) => r.customerName && r.ContactNumber);
-    const invalidRows = processed.filter(
-      (r) => !r.customerName || !r.ContactNumber
-    );
+    const invalidRows = processed.filter((r) => !r.customerName || !r.ContactNumber);
 
-    if (!valid.length)
-      return next(
-        new ApiError(
-          400,
-          `No valid data. ${invalidRows.length} invalid rows skipped.`
-        )
-      );
-
-    // ----------------------------
-    // Duplicate check (EMAIL ONLY)
-    // ----------------------------
-    /*  const emails = valid.map((v) => v.Email).filter(Boolean);
- 
-     const existing = await prisma.customer.findMany({
-       where: {
-         Email: { in: emails },
-       },
-       select: { Email: true },
-     });
- 
-     const existingEmails = new Set(existing.map((e) => e.Email)); */
-
-    // collect contact numbers from incoming rows
-    const contactNumbers = valid.map((v) => v.ContactNumber);
-
-    // find all existing customers with same contact numbers
-    const existingByPhone = await prisma.customer.findMany({
-      where: {
-        ContactNumber: { in: contactNumbers },
-      },
-      select: { ContactNumber: true },
+    const skippedItems = invalidRows.map((r) => {
+      const meta = rowMeta.get(r);
+      const reasons = [];
+      if (!r.customerName) reasons.push("Customer name is missing");
+      if (!r.ContactNumber) reasons.push(meta.phone.reason || "Contact number is invalid");
+      return toReportItem(r, meta, "skipped", reasons);
     });
 
-    // store them in a Set for fast lookup
-    const existingPhones = new Set(
-      existingByPhone.map((e) => e.ContactNumber).filter(Boolean)
-    );
+    const buildReport = ({ importedItems, duplicateItems, failedItems }) => {
+      const noContactItems = importedItems.filter((i) => i.noContact);
 
-    const imported = [];
-    const duplicates = [];
-    const failed = [];
+      const reasonBreakdown = {};
+      [...skippedItems, ...failedItems].forEach((i) =>
+        i.reasons.forEach((rs) => (reasonBreakdown[rs] = (reasonBreakdown[rs] || 0) + 1))
+      );
+
+      const countryBreakdown = {};
+      importedItems.forEach((i) => {
+        countryBreakdown[i.countryCode] = (countryBreakdown[i.countryCode] || 0) + 1;
+      });
+
+      return {
+        totalRows: processed.length,
+        counts: {
+          imported: importedItems.length,
+          duplicates: duplicateItems.length, // these are ALSO inserted (existing behaviour)
+          noContact: noContactItems.length, // these are ALSO inserted (1010101010 placeholder)
+          skipped: skippedItems.length,
+          failed: failedItems.length,
+        },
+        reasonBreakdown,
+        countryBreakdown,
+        rows: {
+          imported: importedItems.slice(0, 200), // full list is in the Excel summary
+          importedTruncated: importedItems.length > 200,
+          duplicates: duplicateItems,
+          noContact: noContactItems,
+          skipped: skippedItems,
+          failed: failedItems,
+        },
+        generatedAt: new Date().toISOString(),
+      };
+    };
+
+    if (!valid.length) {
+      removeUpload();
+      return res.status(400).json({
+        success: false,
+        message: `No valid data. ${skippedItems.length} rows were skipped.`,
+        report: buildReport({ importedItems: [], duplicateItems: [], failedItems: [] }),
+      });
+    }
+
+    // ----------------------------
+    // Duplicate check (CONTACT NUMBER)
+    // ----------------------------
+    // collect unique contact numbers from incoming rows
+    const contactNumbers = [...new Set(valid.map((v) => v.ContactNumber))];
+
+    // find all existing customers with same contact numbers (in chunks so big files don't hit query limits)
+    const existingPhones = new Set();
+    for (const part of chunk(contactNumbers, 1000)) {
+      const existingByPhone = await prisma.customer.findMany({
+        where: { ContactNumber: { in: part } },
+        select: { ContactNumber: true },
+      });
+      existingByPhone.forEach((e) => e.ContactNumber && existingPhones.add(e.ContactNumber));
+    }
+
+    const importedItems = [];
+    const duplicateItems = [];
+    const failedItems = [];
+    const dbPhones = new Set(existingPhones); // phones that existed BEFORE this file
 
     // ---------------------------------------------
     // CACHES to avoid repeated DB calls during import
@@ -475,13 +432,7 @@ export const importCustomers = async (req, res, next) => {
         campaignId = await getOrCreateCampaign(campaignName);
       }
 
-      // Try to find existing type: Type has fields Name and campaignId
-      // If campaignId is present, search by both; otherwise search by Name only
-      const where = campaignId
-        ? { Name_campaignId: { Name: typeName, campaignId } } // compound index doesn't exist - fallback to findFirst
-        : null;
-
-      // Prisma cannot use non-existing compound, so use findFirst
+      // Prisma has no compound unique for Type(Name, campaignId) -> use findFirst
       const found = await prisma.type.findFirst({
         where: campaignId ? { Name: typeName, campaignId } : { Name: typeName },
         select: { id: true },
@@ -492,10 +443,9 @@ export const importCustomers = async (req, res, next) => {
         return found.id;
       }
 
-      // Create type (require campaignId; if not present, create without linking? Schema requires campaignId non-null)
-      // Schema: Type has campaignId String (non-null). So ensure campaignId exists (create default campaign if absent?)
+      // Schema: Type.campaignId is non-null. If user provided a typeName but no campaignName,
+      // create/use a generic campaign named "Default".
       if (!campaignId) {
-        // If user provided a typeName but no campaignName, create a generic campaign named "Default"
         campaignId = await getOrCreateCampaign("Default");
       }
 
@@ -652,7 +602,7 @@ export const importCustomers = async (req, res, next) => {
         data: {
           Name: subLocationName,
           locationId,
-          cityId, // ✅ this fixes the Prisma error
+          cityId,
         },
       });
 
@@ -708,7 +658,7 @@ export const importCustomers = async (req, res, next) => {
         return leadtypename;
       }
 
-      // create new reference
+      // create new lead type
       await prisma.leadType.create({
         data: {
           Name: leadtypename,
@@ -720,27 +670,26 @@ export const importCustomers = async (req, res, next) => {
       return leadtypename;
     };
 
-
-
-
     // --------------------------------------------------
     // Insert one by one (safer) with master creation
     // --------------------------------------------------
     for (const row of valid) {
-      // Duplicate check by email only
-      /* if (row.Email && existingEmails.has(row.Email)) {
-        duplicates.push(row);
-        continue;
-      } */
-      // Duplicate check by ContactNumber
+      const meta = rowMeta.get(row);
+
+      // 1010101010 = "no contact number" placeholder. Many leads can share it,
+      // so it must never be treated as a duplicate (or be added to the duplicate set).
+      const isNoContact = !!meta?.phone?.noContact;
       const isDuplicate =
-        row.ContactNumber && existingPhones.has(row.ContactNumber);
+        !isNoContact && row.ContactNumber && existingPhones.has(row.ContactNumber);
+      const warnings = [...(meta?.phone?.warnings || [])];
 
       if (isDuplicate) {
-        duplicates.push(row);
-        // ✔ DO NOT SKIP — duplicates should still be inserted
+        warnings.push(
+          dbPhones.has(row.ContactNumber)
+            ? "Phone number already exists in the system (imported anyway)"
+            : "Phone number is repeated earlier in this file (imported anyway)"
+        );
       }
-
 
       try {
         // Auto-create master records (but we only store strings on customer)
@@ -776,8 +725,6 @@ export const importCustomers = async (req, res, next) => {
           await getOrCreateLeadType(row.LeadType);
         }
 
-
-
         // Create customer (Customer stores strings as before)
         const created = await prisma.customer.create({
           data: {
@@ -790,80 +737,91 @@ export const importCustomers = async (req, res, next) => {
           },
         });
 
-        imported.push({ ...row, id: created.id });
+        // the customer is saved from here on - nothing below may mark the row as failed
+        const item = toReportItem(row, meta, isDuplicate ? "duplicate" : "imported", [], warnings);
+        item.id = created.id;
+        importedItems.push(item);
+        if (isDuplicate) duplicateItems.push(item);
 
-        //ACTIVITY LOG TRIGGER
-        logActivity({
-          req,
-          admin,
-          action: "import", // Uses the new enum value
-          entity: "customer",
-          entityId: created.id,
-          entityName: created.customerName,
-          customerId: created.id,
-          meta: {
-            method: "excel_bulk_import",
-            campaign: created.Campaign,
-            city: created.City
-          },
-        });
+        if (row.ContactNumber && !isNoContact) existingPhones.add(row.ContactNumber);
 
-        /*  if (row.Email) existingEmails.add(row.Email); */
-        if (row.ContactNumber) existingPhones.add(row.ContactNumber);
+        // ACTIVITY LOG TRIGGER (never lets a logging problem affect the import)
+        try {
+          Promise.resolve(
+            logActivity({
+              req,
+              admin,
+              action: "import", // Uses the new enum value
+              entity: "customer",
+              entityId: created.id,
+              entityName: created.customerName,
+              customerId: created.id,
+              meta: {
+                method: "excel_bulk_import",
+                campaign: created.Campaign,
+                city: created.City
+              },
+            })
+          ).catch((e) => console.log("ACTIVITY LOG FAILED:", e?.message));
+        } catch (e) {
+          console.log("ACTIVITY LOG FAILED:", e?.message);
+        }
       } catch (err) {
         console.log("IMPORT FAILED:", err);
-
-        failed.push({ ...row, error: err.message });
+        failedItems.push(toReportItem(row, meta, "failed", [friendlyError(err)], warnings));
       }
     }
 
+    const report = buildReport({ importedItems, duplicateItems, failedItems });
+    const noContactCount = report.counts.noContact;
+
     // --------------------------------------------------
     // Create Excel Summary
+    // (a problem here must not hide the report - customers are already saved)
     // --------------------------------------------------
-    const summaryDir = path.join(__dirname, "../uploads/summaries");
-    if (!fs.existsSync(summaryDir))
-      fs.mkdirSync(summaryDir, { recursive: true });
+    let summaryUrl;
+    try {
+      const summaryDir = path.join(__dirname, "../uploads/summaries");
+      if (!fs.existsSync(summaryDir))
+        fs.mkdirSync(summaryDir, { recursive: true });
 
-    const filePath = path.join(summaryDir, `summary-${Date.now()}.xlsx`);
-    const wb = xlsx.utils.book_new();
+      const filePath = path.join(summaryDir, `summary-${Date.now()}.xlsx`);
+      const wb = xlsx.utils.book_new();
 
-    xlsx.utils.book_append_sheet(
-      wb,
-      xlsx.utils.json_to_sheet(imported),
-      "Imported"
-    );
-    xlsx.utils.book_append_sheet(
-      wb,
-      xlsx.utils.json_to_sheet(duplicates),
-      "Duplicates"
-    );
-    xlsx.utils.book_append_sheet(
-      wb,
-      xlsx.utils.json_to_sheet(invalidRows),
-      "Invalid"
-    );
-    xlsx.utils.book_append_sheet(
-      wb,
-      xlsx.utils.json_to_sheet(failed),
-      "Failed"
-    );
+      const addSheet = (name, items) =>
+        xlsx.utils.book_append_sheet(wb, xlsx.utils.json_to_sheet(items.map(toSheetRow)), name);
 
-    xlsx.writeFile(wb, filePath);
+      addSheet("Imported", importedItems);
+      addSheet("No Contact", importedItems.filter((i) => i.noContact));
+      addSheet("Duplicates", duplicateItems);
+      addSheet("Invalid", skippedItems);
+      addSheet("Failed", failedItems);
+
+      xlsx.writeFile(wb, filePath);
+      summaryUrl = `/uploads/summaries/${path.basename(filePath)}`;
+    } catch (e) {
+      console.log("SUMMARY FILE FAILED:", e);
+    }
 
     // cleanup
-    fs.unlink(req.file.path, () => { });
+    removeUpload();
 
     return res.status(200).json({
       success: true,
-      message: `${imported.length} imported, ${duplicates.length} duplicates, ${invalidRows.length} invalid, ${failed.length} failed.`,
-      imported: imported.length,
-      duplicates: duplicates.length,
-      invalid: invalidRows.length,
-      failed: failed.length,
-      file: `/uploads/summaries/${path.basename(filePath)}`,
+      message:
+        `${importedItems.length} imported` +
+        ` (${duplicateItems.length} duplicates, ${noContactCount} without contact number)` +
+        `, ${skippedItems.length} skipped, ${failedItems.length} failed.`,
+      imported: importedItems.length,
+      duplicates: duplicateItems.length,
+      noContact: noContactCount,
+      invalid: skippedItems.length,
+      failed: failedItems.length,
+      file: summaryUrl,
+      report,
     });
   } catch (err) {
-    if (req.file?.path) fs.unlink(req.file.path, () => { });
+    removeUpload();
     next(new ApiError(500, err.message));
   }
 };
