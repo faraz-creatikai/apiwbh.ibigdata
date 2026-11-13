@@ -7,12 +7,21 @@
 //  - Times are in the alarm's own time zone (the UI should send the browser's: Intl.DateTimeFormat().resolvedOptions().timeZone).
 //  - The worker looks every 30 seconds, so an alarm fires within ~30 seconds of its time.
 //  - It runs the campaign with the same startCampaignRun() the Run button uses, from the campaign owner's accounts.
+//
+// CHANGES IN THIS VERSION (search for "FIX"):
+//  FIX 1  fire() saves the run it started in schedule.lastRunId (needs the new column, see the Prisma note below).
+//  FIX 2  listSchedules attaches `lastRun` (real status, summary, tracking) read from the run table with the SAME
+//         trackingForRuns() the run reports use, so the alarm never stays stuck on "started".
+//  FIX 3  fire(): a deleted campaign now records a status instead of silently returning.
+//  FIX 4  days are sorted numerically.
+//
+// PRISMA: add to model OutreachCampaignSchedule   ->   lastRunId String?   (then run the migration)
 
 import { z } from "zod";
 import prisma from "../config/prismaClient.js";
 import ApiError from "../utils/ApiError.js";
 import { ownedWhere } from "./controller.outreachCampaign.js";
-import { startCampaignRun } from "./controller.outreachCampaignRun.js";
+import { startCampaignRun, trackingForRuns } from "./controller.outreachCampaignRun.js";
 
 /* ================= SETTINGS ================= */
 
@@ -79,7 +88,7 @@ const parse = (body) => {
   const tz = d.timezone || DEFAULT_TIMEZONE;
   try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); } catch { throw new ApiError(400, "Unknown time zone"); }
 
-  const days = [...new Set(d.days)].sort();
+  const days = [...new Set(d.days)].sort((a, b) => a - b); // FIX 4
   const enabled = d.enabled ?? true;
   return {
     label: d.label || "",
@@ -97,7 +106,29 @@ const ownedCampaign = (req) =>
 
 const SELECT = {
   id: true, campaignId: true, label: true, time: true, days: true, timezone: true, enabled: true,
-  nextRunAt: true, lastRunAt: true, lastRunStatus: true, lastError: true, createdAt: true,
+  nextRunAt: true, lastRunAt: true, lastRunStatus: true, lastRunId: true, lastError: true, createdAt: true,
+};
+
+/* ================= LAST RUN INFO (FIX 2) ================= */
+
+/** Adds `lastRun` to each schedule: the real run status + summary + tracking (same numbers as the run report). */
+const withLastRun = async (schedules) => {
+  const ids = [...new Set(schedules.map((s) => s.lastRunId).filter(Boolean))];
+  if (!ids.length) return schedules.map((s) => ({ ...s, lastRun: null }));
+
+  const runs = await prisma.outreachCampaignRun.findMany({ where: { id: { in: ids } } });
+  const tmap = await trackingForRuns(runs);
+  const byId = new Map(
+    runs.map((r) => [
+      r.id,
+      {
+        id: r.id, trigger: r.trigger, status: r.status, totalCustomers: r.totalCustomers,
+        summary: r.summary, error: r.error, startedAt: r.startedAt, finishedAt: r.finishedAt,
+        tracking: tmap.get(r.id) || {},
+      },
+    ])
+  );
+  return schedules.map((s) => ({ ...s, lastRun: byId.get(s.lastRunId) ?? null }));
 };
 
 /* ================= HANDLERS ================= */
@@ -110,7 +141,7 @@ export const listSchedules = async (req, res, next) => {
     const data = await prisma.outreachCampaignSchedule.findMany({
       where: { campaignId: campaign.id }, select: SELECT, orderBy: [{ time: "asc" }, { createdAt: "asc" }],
     });
-    res.json({ success: true, data });
+    res.json({ success: true, data: await withLastRun(data) });
   } catch (err) {
     fail(err, next);
   }
@@ -129,7 +160,7 @@ export const createSchedule = async (req, res, next) => {
 
     const data = parse(req.body);
     const created = await prisma.outreachCampaignSchedule.create({ data: { ...data, campaignId: campaign.id }, select: SELECT });
-    res.status(201).json({ success: true, data: created });
+    res.status(201).json({ success: true, data: { ...created, lastRun: null } });
   } catch (err) {
     fail(err, next);
   }
@@ -148,7 +179,7 @@ export const updateSchedule = async (req, res, next) => {
       ...req.body,
     });
     const updated = await prisma.outreachCampaignSchedule.update({ where: { id: existing.id }, data, select: SELECT });
-    res.json({ success: true, data: updated });
+    res.json({ success: true, data: (await withLastRun([updated]))[0] });
   } catch (err) {
     fail(err, next);
   }
@@ -183,17 +214,29 @@ const fire = async (s, now) => {
 
   let status = "started";
   let error = null;
+  let runId = null;
   try {
     const campaign = await prisma.outreachCampaign.findUnique({ where: { id: s.campaignId } });
-    if (!campaign) return;
-    if (now.getTime() - s.nextRunAt.getTime() > MISSED_MS) status = "missed"; // server was down for too long: don't send late
-    else if (campaign.status === "paused") status = "skipped_paused";
-    else await startCampaignRun(campaign, { trigger: "scheduled", scheduleId: s.id });
+    if (!campaign) {
+      status = "failed"; // FIX 3
+      error = "Campaign no longer exists";
+    } else if (now.getTime() - s.nextRunAt.getTime() > MISSED_MS) {
+      status = "missed"; // server was down for too long: don't send late
+    } else if (campaign.status === "paused") {
+      status = "skipped_paused";
+    } else {
+      const { run } = await startCampaignRun(campaign, { trigger: "scheduled", scheduleId: s.id });
+      runId = run.id; // FIX 1
+    }
   } catch (err) {
     status = /already running/i.test(err.message) ? "skipped_running" : "failed";
     error = String(err.message).slice(0, 500);
   }
-  await prisma.outreachCampaignSchedule.update({ where: { id: s.id }, data: { lastRunStatus: status, lastError: error } }).catch(() => {});
+
+  // lastRunId is only overwritten when a run really started, so a skipped alarm keeps pointing at the last real report
+  await prisma.outreachCampaignSchedule
+    .update({ where: { id: s.id }, data: { lastRunStatus: status, lastError: error, ...(runId && { lastRunId: runId }) } })
+    .catch(() => {});
 };
 
 /** Call once at server start (next to startCampaignRunMonitor). */
