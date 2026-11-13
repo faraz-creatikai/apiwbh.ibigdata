@@ -40,26 +40,20 @@ export async function saveAdminAiApiKey(req, res, next) {
       throw new ApiError(500, "Failed to encrypt the API key");
     }
 
-    const savedConfig = await prisma.adminAiApiKey.upsert({
-      where: {
-        adminId_provider: {
-          adminId: adminId,
-          provider: provider.toUpperCase(),
-        },
-      },
-      update: {
-        apiKey: encryptedKeyText,
-        model: model.trim(),
-        status: "ACTIVE",
-      },
-      create: {
-        adminId: adminId,
-        provider: provider.toUpperCase(),
-        apiKey: encryptedKeyText,
-        model: model.trim(),
-        status: "ACTIVE",
-      },
-    });
+    const providerKey = provider.toUpperCase();
+
+const savedConfig = await prisma.$transaction(async (tx) => {
+  // only one ACTIVE config at a time
+  await tx.adminAiApiKey.updateMany({
+    where: { adminId, status: "ACTIVE", provider: { not: providerKey } },
+    data: { status: "INACTIVE" },
+  });
+  return tx.adminAiApiKey.upsert({
+    where: { adminId_provider: { adminId, provider: providerKey } },
+    update: { apiKey: encryptedKeyText, model: model.trim(), status: "ACTIVE" },
+    create: { adminId, provider: providerKey, apiKey: encryptedKeyText, model: model.trim(), status: "ACTIVE" },
+  });
+});
 
     return res.status(200).json({
       success: true,

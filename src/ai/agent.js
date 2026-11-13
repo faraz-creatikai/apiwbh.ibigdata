@@ -88,6 +88,23 @@ export async function executeDynamicPrompt(client, model, provider, promptText) 
     });
     return response.choices?.[0]?.message?.content;
 
+  } else if (provider === "ANTHROPIC") {
+    const response = await client.messages.create({
+      model,
+      max_tokens: 4096, // required by Claude; raise it if your JSON can be long
+      temperature: 0.2,
+      system: "Respond with a single valid JSON object only. No markdown, no code fences, no text before or after it.",
+      messages: [{ role: "user", content: promptText }],
+    });
+
+    const text = response.content.find((b) => b.type === "text")?.text ?? "";
+
+    // Claude has no json_object switch like OpenAI/Groq, so strip fences and cut to the outer {...}
+    const cleaned = text.replace(/```json|```/gi, "").trim();
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    return start !== -1 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+
   } else {
     // Ready for you to add ANTHROPIC, etc. later!
     throw new Error(`Unsupported AI Provider: ${provider}`);
