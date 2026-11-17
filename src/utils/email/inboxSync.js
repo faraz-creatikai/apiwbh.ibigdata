@@ -27,7 +27,7 @@ const INITIAL_LIMIT = 200; // first sync: newest N messages
 const MAX_PER_RUN = 200; // later syncs: oldest-first, so a big burst is drained over a few ticks
 const CHUNK = 25;
 const MAX_SOURCE = 5 * 1024 * 1024; // don't pull more than 5MB of a single message during sync
-const MAX_BODY = 500_000;
+const MAX_BODY = 200_000;
 const LOCK_MS = 3 * 60_000;
 const RETRY_MS = 2 * 60_000;
 const AUTH_RETRY_MS = 30 * 60_000; // don't hammer a provider with a wrong password
@@ -201,6 +201,41 @@ const reconcile = async (client, adminId) => {
   if (gone.length) await prisma.emailMessage.deleteMany({ where: { id: { in: gone } } });
 };
 
+const MAX_BATCH_BYTES = 1_000_000; // ~1MB per INSERT, safely under MySQL limits
+
+const insertRows = async (rows) => {
+  let count = 0;
+  let batch = [];
+  let size = 0;
+
+  const flush = async () => {
+    if (!batch.length) return;
+    try {
+      count += (await prisma.emailMessage.createMany({ data: batch, skipDuplicates: true })).count;
+    } catch (e) {
+      // batch failed: retry one by one so a single bad email can't block the whole inbox
+      for (const row of batch) {
+        try {
+          count += (await prisma.emailMessage.createMany({ data: [row], skipDuplicates: true })).count;
+        } catch (err) {
+          console.error(`inbox: skipped uid ${row.uid}: ${err.message}`);
+        }
+      }
+    }
+    batch = [];
+    size = 0;
+  };
+
+  for (const r of rows) {
+    const s = (r.bodyHtml?.length || 0) + (r.bodyText?.length || 0) + 2000;
+    if (batch.length && size + s > MAX_BATCH_BYTES) await flush();
+    batch.push(r);
+    size += s;
+  }
+  await flush();
+  return count;
+};
+
 /** Never throws. Returns { added } | { skipped } | { error }. */
 export const syncInbox = async (adminId) => {
   const cfg = await prisma.adminEmailConfig.findUnique({ where: { adminId }, select: { isActive: true, imapHost: true } });
@@ -241,7 +276,7 @@ export const syncInbox = async (adminId) => {
             console.error(`inbox: skipped uid ${msg.uid} for ${adminId}: ${e.message}`);
           }
         }
-        if (rows.length) count += (await prisma.emailMessage.createMany({ data: rows, skipDuplicates: true })).count;
+        if (rows.length) count += await insertRows(rows);
         await prisma.emailInboxSyncState.update({ where: { adminId }, data: { lastUid: chunk[chunk.length - 1] } });
       }
 

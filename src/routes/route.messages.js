@@ -17,7 +17,7 @@ import { protectRoute } from "../middlewares/auth.js";
 import { deleteChat, getChatMessages, getInboxSummary, markChatRead } from "../controllers/controller.whatsappInbox.js";
 import { connectEmail, disconnectEmail, getEmailConnection, testEmailConnection, verifyEmailConnection } from "../controllers/controller.emailconnection.js";
 import { sendTestEmail } from "../controllers/controller.emailconnection.js";
-import { downloadEmailAttachment, getEmailInboxStatus, getEmailMessage, listEmailMessages, syncEmailInbox, updateEmailMessages } from "../controllers/controller.emailInbox.js";
+import { downloadEmailAttachment, getEmailInboxStatus, getEmailMessage, getSentEmail, listEmailMessages, listSentEmails, syncEmailInbox, updateEmailMessages } from "../controllers/controller.emailInbox.js";
 import { cancelEmailSendBatch, getEmailSendBatch, replyToInboxEmail, sendEmailFromInbox } from "../controllers/controller.emailCompose.js";
 
 const messageRoutes = express.Router();
@@ -44,6 +44,10 @@ messageRoutes.get("/email/inbox/messages", listEmailMessages);
 messageRoutes.patch("/email/inbox/messages", updateEmailMessages); // bulk: { ids, isRead?, isStarred? }
 messageRoutes.get("/email/inbox/messages/:id", getEmailMessage);
 messageRoutes.get("/email/inbox/messages/:id/attachments/:index", downloadEmailAttachment);
+
+//sent email routes
+messageRoutes.get("/inbox/sent", listSentEmails);
+messageRoutes.get("/inbox/sent/:id", getSentEmail);
 
 //email inbox compose send/reply routes
 const emailAttach = templateUpload.fields([{ name: "attachments", maxCount: 5 }]); // files are optional

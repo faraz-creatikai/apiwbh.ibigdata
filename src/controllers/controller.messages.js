@@ -824,7 +824,7 @@ export const sendEmailDirectToCustomers = async (req, res, next) => {
           body = replacePlaceholders(Body, c);
         }
 
-        const info = await sendEmail(c.Email, subject, body, { adminId: req.admin.id });
+        const info = await sendEmail(c.Email, subject, body, { adminId: req.admin.id,customerId: c.id, source: "ai_email" });
         results.push({ id: c.id, email: c.Email, status: "sent", metadata, workSummary, info: info.messageId || info.response });
       } catch (err) {
         results.push({ id: c.id, name: c.customerName, status: "failed", error: err.message });

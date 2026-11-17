@@ -22,6 +22,7 @@ const bodySchema = z.object({
   // Everything here is optional: a blank part is auto-detected. SMTP and IMAP can be set independently.
   advanced: z
     .object({
+      provider: z.enum(["brevo"]).optional(),
       smtpHost: optText(255),
       smtpPort: optPort,
       smtpUser: optText(254),
@@ -32,6 +33,9 @@ const bodySchema = z.object({
     })
     .refine((a) => a.imapHost || (!a.imapUser && !a.imapPass), {
       message: "Enter the IMAP server to use a custom IMAP username or password",
+    })
+     .refine((a) => a.provider !== "brevo" || !!a.smtpUser, {   // 👈 ADD THIS
+      message: "Enter your Brevo SMTP login (…@smtp-brevo.com)",
     })
     .optional(),
 });

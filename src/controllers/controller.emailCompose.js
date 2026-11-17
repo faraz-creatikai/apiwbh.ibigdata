@@ -484,6 +484,7 @@ const run = async (id) => {
                     inReplyTo: b.inReplyTo || undefined,
                     references: b.refs || undefined,
                     messageId: `<${crypto.randomUUID()}@${(String(cfg.email).split("@")[1] || "localhost").toLowerCase()}>`,
+                    source: b.kind === "reply" ? "inbox_reply" : "inbox_compose",
                 }),
                 SEND_TIMEOUT_MS
             );

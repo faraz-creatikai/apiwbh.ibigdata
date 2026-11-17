@@ -1,6 +1,6 @@
 import nodemailer from "nodemailer";
 import { ImapFlow } from "imapflow";
-import { assertPublicHost, resolvePlan, manualPlan } from "./emailProviders.js";
+import { assertPublicHost, resolvePlan, manualPlan, brevoPlan } from "./emailProviders.js";
 
 /* ====================================================================
  * SMTP options — ONE place that decides secure / requireTLS, used by
@@ -60,7 +60,7 @@ export const probeImap = async (imap, { user, pass }) => {
     greetingTimeout: 10_000,
     socketTimeout: 20_000,
   });
-  client.on("error", () => {}); // unhandled ImapFlow 'error' events would crash the process
+  client.on("error", () => { }); // unhandled ImapFlow 'error' events would crash the process
   try {
     await client.connect();
     const boxes = await client.list();
@@ -104,7 +104,9 @@ const failure = (code, plan, extra = {}) => ({
 export const detectAndVerify = async ({ email, password, advanced }) => {
   email = String(email).trim().toLowerCase();
 
-  const plan = advanced?.smtpHost ? manualPlan(advanced) : await resolvePlan(email);
+  const plan = advanced?.provider === "brevo"
+    ? brevoPlan()
+    : advanced?.smtpHost ? manualPlan(advanced) : await resolvePlan(email);
   if (plan.invalidDomain) {
     return { ok: false, code: "INVALID_DOMAIN", message: "This email domain does not exist or cannot receive email. Check the address for typos." };
   }
@@ -128,7 +130,7 @@ export const detectAndVerify = async ({ email, password, advanced }) => {
         tried.push({ host: cand.host, port: cand.port, result: e.code === "PRIVATE_HOST" ? "blocked_private_address" : "dns_not_found" });
         continue;
       }
-      const user = cand.user || email;
+      const user = advanced?.provider === "brevo" ? advanced.smtpUser : (cand.user || email);
       const r = await verifySmtp(cand, { user, pass });
       tried.push({ host: cand.host, port: cand.port, secure: cand.secure, result: r.ok ? "ok" : r.kind });
       if (r.ok) {
@@ -164,11 +166,11 @@ export const detectAndVerify = async ({ email, password, advanced }) => {
   const imapPort = Number(advanced?.imapPort) || 993;
   const customImap = advanced?.imapHost
     ? {
-        host: String(advanced.imapHost).trim(),
-        port: imapPort,
-        secure: imapPort !== 143, // 143 = STARTTLS, everything else = implicit TLS
-        user: advanced.imapUser ? String(advanced.imapUser).trim() : undefined,
-      }
+      host: String(advanced.imapHost).trim(),
+      port: imapPort,
+      secure: imapPort !== 143, // 143 = STARTTLS, everything else = implicit TLS
+      user: advanced.imapUser ? String(advanced.imapUser).trim() : undefined,
+    }
     : null;
   const customImapPass = customImap && advanced.imapPass ? String(advanced.imapPass) : null;
   const imapPassword = customImapPass ? (plan.stripPasswordSpaces ? customImapPass.replace(/\s+/g, "") : customImapPass) : pass;

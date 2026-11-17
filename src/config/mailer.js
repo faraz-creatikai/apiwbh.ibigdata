@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { getAdminMailer } from "../utils/email/AdminMailerConfig.js";
 import crypto from "node:crypto";
 import { recordSend, trackingPixel } from "../utils/channelTracking.js";
+import prisma from "./prismaClient.js";
 
 
 dotenv.config();
@@ -119,6 +120,25 @@ export const sendEmail = async (to, subject, html, options = {}) => {
     const info = await (adminMailer ? adminMailer.transporter : transporter).sendMail({ envelope: { from: envelopeFrom, to }, raw: rawEmail });
     console.log("✅ Email sent:", info.response);
     track({ providerMessageId: messageId, status: "sent" });
+
+    if (options.adminId && options.store !== false) {
+      const plain = options.text || String(html).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      prisma.sentEmail.create({
+        data: {
+          adminId: options.adminId,
+          messageId,
+          toEmail: String(to).slice(0, 320),
+          subject: String(subject || "(no subject)"),
+          snippet: plain.slice(0, 300),
+          bodyHtml: String(html).slice(0, 150_000), // original html, not finalHtml (no tracking pixel)
+          attachments: (options.attachments || []).map((a) => ({ filename: a.filename })),
+          hasAttachments: !!options.attachments?.length,
+          label: options.source || null,
+          runId: options.runId ?? null,
+          customerId: options.customerId ?? null,
+        },
+      }).catch((e) => console.error("sent store:", e.message)); // never fail an already-sent email
+    }
 
     let sentCopy = "skipped";
     let sentCopyError = null;

@@ -363,3 +363,22 @@ export function manualPlan({ smtpHost, smtpPort, smtpUser, imapHost, imapPort })
     unsupported: null,
   };
 }
+
+export const brevoPlan = () => ({
+  id: "brevo",
+  label: "Brevo (SMTP relay)",
+  source: "preset",
+  autoSavesSent: false,
+  stripPasswordSpaces: false,
+  warnings: [
+    "Brevo only sends mail. Make sure this From address is a verified Sender/Domain in Brevo, or messages will be dropped silently.",
+  ],
+  authHint: "Use the SMTP login (…@smtp-brevo.com) and an SMTP key from Brevo → SMTP & API, not your account password.",
+  groups: [{
+    smtp: [
+      { host: "smtp-relay.brevo.com", port: 587, secure: false },
+      { host: "smtp-relay.brevo.com", port: 465, secure: true },
+    ],
+    imap: [], // Brevo has no inbox
+  }],
+});

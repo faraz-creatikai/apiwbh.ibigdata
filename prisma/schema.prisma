@@ -84,6 +84,8 @@ model Admin {
   emailMessages       EmailMessage[]
   emailSendBatches    EmailSendBatch[]
 
+  sentEmails SentEmail[]
+
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   scheduledPosts ScheduledPost[]
@@ -332,8 +334,8 @@ model EmailMessage {
 
   subject  String  @db.Text
   snippet  String  @db.VarChar(300)
-  bodyText String? @db.MediumText
-  bodyHtml String? @db.MediumText // already sanitized at ingest; still render in a sandboxed iframe
+  bodyText String? @db.LongText
+  bodyHtml String? @db.LongText
 
   attachments    Json    @default("[]") // metadata only: [{ index, filename, contentType, size, inline }]
   hasAttachments Boolean @default(false)
@@ -378,6 +380,25 @@ model EmailSendBatch {
 
   @@index([adminId, createdAt])
   @@index([status, lockUntil])
+}
+
+model SentEmail {
+  id             String   @id @default(uuid())
+  adminId        String
+  admin          Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  messageId      String   @db.VarChar(512)
+  toEmail        String   @db.VarChar(320)
+  subject        String   @db.Text
+  snippet        String   @db.VarChar(300)
+  bodyHtml       String?  @db.LongText
+  attachments    Json     @default("[]")
+  hasAttachments Boolean  @default(false)
+  label          String?
+  runId          String?
+  customerId     String?
+  sentAt         DateTime @default(now())
+
+  @@index([adminId, sentAt])
 }
 
 model WhatsAppMetaConfig {

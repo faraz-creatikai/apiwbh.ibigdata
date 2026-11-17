@@ -186,3 +186,30 @@ export const downloadEmailAttachment = async (req, res, next) => {
     next(new ApiError(500, err.message));
   }
 };
+
+
+// GET /inbox/sent?page=&limit=&q=
+export const listSentEmails = async (req, res, next) => {
+  try {
+    const { page, limit, q } = listSchema.parse(req.query);
+    const where = { adminId: req.admin.id };
+    if (q) where.OR = ["subject", "toEmail", "snippet"].map((f) => ({ [f]: { contains: q } }));
+    const [total, messages] = await Promise.all([
+      prisma.sentEmail.count({ where }),
+      prisma.sentEmail.findMany({
+        where, orderBy: { sentAt: "desc" }, skip: (page - 1) * limit, take: limit,
+        select: { id: true, toEmail: true, subject: true, snippet: true, sentAt: true, hasAttachments: true, label: true },
+      }),
+    ]);
+    res.json({ success: true, page, limit, total, totalPages: Math.ceil(total / limit), messages });
+  } catch (err) { next(new ApiError(500, err.message)); }
+};
+
+// GET /inbox/sent/:id
+export const getSentEmail = async (req, res, next) => {
+  try {
+    const message = await prisma.sentEmail.findFirst({ where: { id: req.params.id, adminId: req.admin.id } });
+    if (!message) return next(new ApiError(404, "Message not found"));
+    res.json({ success: true, message });
+  } catch (err) { next(new ApiError(500, err.message)); }
+};
