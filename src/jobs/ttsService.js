@@ -1,30 +1,31 @@
 // services/ttsService.js
 //
-// 100% FREE AI Voices using Microsoft Edge's internal Read-Aloud API.
-// Uses `node-edge-tts` which is stable for Node 24.
+// AI Voices using ElevenLabs API.
+// Uses native Node.js fetch, no external TTS libraries required.
 
 import fs from "fs/promises";
 import path from "path";
-import { EdgeTTS } from "node-edge-tts";
 import { runFfmpeg, ffprobeDuration, getAtempoFilter } from "../utils/mediaUtils.js";
 
 const AUDIO_SAMPLE_RATE = 44100;
 const MIN_SPEED = 0.92;
 const MAX_SPEED = 1.18;
 
-// Map your frontend UI IDs to real Microsoft Neural Voices
+// Map your frontend UI IDs to real ElevenLabs Voice IDs.
+// These are default ElevenLabs voices. You can replace these IDs 
+// with your cloned voices from the ElevenLabs VoiceLab.
 const VOICE_MAP = {
   hi: {
-    female_1: 'hi-IN-SwaraNeural',
-    male_1: 'hi-IN-MadhurNeural',
-    female_2: 'en-IN-NeerjaNeural', 
-    male_2: 'en-IN-PrabhatNeural'
+    female_1: '21m00Tcm4TlvDq8ikWAM', // Rachel
+    male_1: '29vD33N1CtxCmqQRPOZB',   // Drew
+    female_2: 'zrHiDhphv9ZnVXBqCLjz', // Mimi
+    male_2: '2EiwWnXFnvU5JabPnv8n'    // Clyde
   },
   en: {
-    female_1: 'en-IN-NeerjaNeural',
-    male_1: 'en-IN-PrabhatNeural',
-    female_2: 'en-US-AriaNeural',
-    male_2: 'en-US-GuyNeural'
+    female_1: '21m00Tcm4TlvDq8ikWAM', // Rachel
+    male_1: '29vD33N1CtxCmqQRPOZB',   // Drew
+    female_2: 'zrHiDhphv9ZnVXBqCLjz', // Mimi
+    male_2: '2EiwWnXFnvU5JabPnv8n'    // Clyde
   }
 };
 
@@ -33,19 +34,44 @@ export function countSpokenWords(text) {
   return matches ? matches.length : 0;
 }
 
-// 👇 Uses the working node-edge-tts package
+// 👇 Replaced Microsoft Edge logic with ElevenLabs API
 async function synthesizeRaw(text, outputPath, lang, voiceId = 'female_1') {
-  const specificVoice = VOICE_MAP[lang]?.[voiceId] || VOICE_MAP[lang]['female_1'];
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) {
+    throw new Error("ELEVENLABS_API_KEY is not set in your .env file");
+  }
 
-  const tts = new EdgeTTS({
-    voice: specificVoice,
-    lang: lang === 'en' ? 'en-IN' : 'hi-IN',
-    outputFormat: 'audio-24khz-96kbitrate-mono-mp3'
+  // Fallback to a default voice if the mapped one is missing
+  const specificVoice = VOICE_MAP[lang]?.[voiceId] || VOICE_MAP['en']['female_1'];
+
+  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${specificVoice}`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'audio/mpeg',
+      'xi-api-key': apiKey,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      text: text,
+      // eleven_multilingual_v2 is the best model for both English and Hindi/Hinglish
+      model_id: 'eleven_multilingual_v2', 
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.75
+      }
+    })
   });
-  
-  // Natively accepts the direct file path, no weird folder creation bugs
-  await tts.ttsPromise(text, outputPath);
-  
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`ElevenLabs API Error (${response.status}): ${errorText}`);
+  }
+
+  // Convert the response to a buffer and save it to disk
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  await fs.writeFile(outputPath, buffer);
+
   return outputPath;
 }
 
@@ -53,7 +79,7 @@ async function assertNonTrivialAudioFile(filePath, label) {
   const stats = await fs.stat(filePath).catch(() => null);
   if (!stats || stats.size < 200) {
     throw new Error(
-      `${label} produced an empty audio file. Ensure your server has internet access.`
+      `${label} produced an empty audio file. Ensure your ElevenLabs API limits haven't been exceeded.`
     );
   }
 }
@@ -142,7 +168,6 @@ export async function createSyncedNarration({ voiceoverLines, preferredDuration,
   for (let index = 0; index < voiceoverLines.length; index += 1) {
     const line = voiceoverLines[index];
     
-    // 👇 Reverted back to .mp3 so it perfectly matches the output of node-edge-tts
     const rawPath = path.join(workDir, `voice_raw_${index}.mp3`);
     const trimmedPath = path.join(workDir, `voice_trimmed_${index}.wav`);
     const segmentPath = path.join(workDir, `voice_segment_${index}.wav`);
