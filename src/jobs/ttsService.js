@@ -14,18 +14,19 @@ const MAX_SPEED = 1.18;
 // Map your frontend UI IDs to real ElevenLabs Voice IDs.
 // These are default ElevenLabs voices. You can replace these IDs 
 // with your cloned voices from the ElevenLabs VoiceLab.
+// Map your frontend UI IDs to ElevenLabs' New Default Free-Tier Voices
 const VOICE_MAP = {
   hi: {
-    female_1: '21m00Tcm4TlvDq8ikWAM', // Rachel
-    male_1: '29vD33N1CtxCmqQRPOZB',   // Drew
-    female_2: 'zrHiDhphv9ZnVXBqCLjz', // Mimi
-    male_2: '2EiwWnXFnvU5JabPnv8n'    // Clyde
+    female_1: 'BFd5oBc2DDna33pSi4Gf', // Alicia - Polished Global Anchor
+    male_1: 'ktkP7Nsj67dw2zcplQYt',   // Lawrence - Bright and Informative
+    female_2: 'g7LVvkPWALzPxOQbF6OE', // Jade - Upbeat and Natural
+    male_2: 'l7kNoIfnJKPg7779LI2t'    // Eddie - Natural and Helpful
   },
   en: {
-    female_1: '21m00Tcm4TlvDq8ikWAM', // Rachel
-    male_1: '29vD33N1CtxCmqQRPOZB',   // Drew
-    female_2: 'zrHiDhphv9ZnVXBqCLjz', // Mimi
-    male_2: '2EiwWnXFnvU5JabPnv8n'    // Clyde
+    female_1: 'BFd5oBc2DDna33pSi4Gf', // Alicia - Polished Global Anchor
+    male_1: 'ktkP7Nsj67dw2zcplQYt',   // Lawrence - Bright and Informative
+    female_2: 'g7LVvkPWALzPxOQbF6OE', // Jade - Upbeat and Natural
+    male_2: 'l7kNoIfnJKPg7779LI2t'    // Eddie - Natural and Helpful
   }
 };
 
