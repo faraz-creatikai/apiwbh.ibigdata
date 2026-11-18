@@ -36,14 +36,10 @@ import { syncInbox } from "../utils/email/inboxSync.js";
 
 const RUNNABLE = ["email", "whatsapp_baileys"]; // channels that can run today
 const EMAIL_PAUSE_MS = 2000; // wait between emails: 2000 = 2 seconds (really 2-4s)
-const WA_PAUSE_MIN_MS = 45_000;    // was 3000
-const WA_PAUSE_MAX_MS = 90_000;    // was 7000
-const WA_BREAK_EVERY = 20;         // long break after every 20 sent
-const WA_BREAK_MIN_MS = 180_000;   // 3 min
-const WA_BREAK_MAX_MS = 420_000;   // 7 min
-const WA_DAILY_LIMIT = 100;
+const WA_PAUSE_MIN_MS = 3000; // wait between WhatsApp messages: 3-7 seconds (ban protection)
+const WA_PAUSE_MAX_MS = 7000;
 const MAX_CONSECUTIVE_FAILS = 5; // stop a channel after this many failures in a row
-const STALE_MS = 20 * 60_000;   // a "running" run with no activity for 10 min is marked failed
+const STALE_MS = 10 * 60_000; // a "running" run with no activity for 10 min is marked failed
 const MONITOR_MS = 5 * 60_000;
 
 /* ================= HELPERS ================= */
@@ -51,22 +47,14 @@ const MONITOR_MS = 5 * 60_000;
 const fail = (err, next) => next(err instanceof ApiError ? err : new ApiError(500, err.message));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const emailPause = () => EMAIL_PAUSE_MS + Math.random() * EMAIL_PAUSE_MS;
-const makeWaPause = () => {
-    let n = 0;
-    return () => {
-        n++;
-        let ms = WA_PAUSE_MIN_MS + Math.random() * (WA_PAUSE_MAX_MS - WA_PAUSE_MIN_MS);
-        if (n % WA_BREAK_EVERY === 0) ms += WA_BREAK_MIN_MS + Math.random() * (WA_BREAK_MAX_MS - WA_BREAK_MIN_MS);
-        return ms;
-    };
-};
+const waPause = () => WA_PAUSE_MIN_MS + Math.random() * (WA_PAUSE_MAX_MS - WA_PAUSE_MIN_MS);
 
 // errors after which it makes no sense to try the next customer
 const emailFatal = (err) =>
     err?.code === "EAUTH" ||
     [530, 534, 535].includes(err?.responseCode) ||
     /No email connected|decrypt|credentials|EMAIL_CONFIG_SECRET|quota|rate limit|too many|limit exceeded/i.test(err?.message || "");
-const waFatal = (err) => /failed to (stabilize\/)?connect|not linked|daily whatsapp limit/i.test(err?.message || "");
+const waFatal = (err) => /failed to (stabilize\/)?connect|not linked/i.test(err?.message || "");
 
 const esc = (s) =>
     String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
@@ -118,7 +106,7 @@ export const trackingForRuns = async (runs) => {
         }
         out.set(r.id, per);
     }
-
+    
     const ids = runs.map((r) => r.id);
     if (!ids.length) return out;
 
@@ -142,7 +130,7 @@ export const trackingForRuns = async (runs) => {
     for (const per of out.values()) {
         if (per.email) per.email.delivered = Math.max(0, per.email.sent - per.email.bounced);
     }
-
+    
     return out;
 };
 
@@ -201,12 +189,10 @@ const execute = async ({ run, campaign, customers, emailTpl, waTpl, runnable, no
     const counts = Object.fromEntries(runnable.map((ch) => [ch, { sent: 0, failed: 0, skipped: 0 }]));
     const snapshot = () => ({ ...counts, notRun, unavailableCustomers: unavailable });
     const buffer = [];
-    let lastFlush = Date.now();
 
     // write pending log rows + the live counts (every 10 customers, and at the end)
     const flush = async () => {
         if (!buffer.length) return;
-        lastFlush = Date.now();
         const rows = buffer.splice(0, buffer.length);
         await prisma.outreachCampaignLog.createMany({ data: rows });
         await prisma.outreachCampaignRun.update({ where: { id: runId }, data: { summary: snapshot() } });
@@ -214,7 +200,7 @@ const execute = async ({ run, campaign, customers, emailTpl, waTpl, runnable, no
     const log = async (channel, customerId, status, detail = null) => {
         counts[channel][status]++;
         buffer.push({ runId, customerId, channel, status, detail: detail ? String(detail).slice(0, 500) : null });
-        if (buffer.length >= 10 || Date.now() - lastFlush > 60_000) await flush();
+        if (buffer.length >= 10) await flush();
     };
     const skipAll = async (channel, reason) => {
         for (const c of customers) await log(channel, c.id, "skipped", reason);
@@ -306,10 +292,6 @@ const execute = async ({ run, campaign, customers, emailTpl, waTpl, runnable, no
                 if (!phone) return { skipped: "Invalid phone number" };
                 if (seen.has(phone)) return { skipped: "Duplicate phone number" };
                 seen.add(phone);
-                const sentLast24h = await prisma.channelMessage.count({
-                    where: { adminId, channel: "whatsapp_baileys", status: "sent", sentAt: { gte: new Date(Date.now() - 24 * 3600_000) } },
-                });
-                if (sentLast24h >= WA_DAILY_LIMIT) throw new Error("Daily WhatsApp limit reached");
                 await sendBaileysWhatsApp(adminId, phone, fill(waTpl.body, c), imageUrl, { ...extra, source: "campaign", runId, customerId: c.id });
                 return {};
             },
@@ -444,9 +426,9 @@ export const getCampaignRuns = async (req, res, next) => {
         if (!campaign) return next(new ApiError(404, "Campaign not found"));
 
         // FIX: Reconcile replies currently in the DB instantly
-        await trackEmailInbox(campaign.createdById).catch(() => { });
+        await trackEmailInbox(campaign.createdById).catch(() => {});
         // FIX: Non-blocking background IMAP sync to fetch new emails from Hostinger/Gmail
-        syncInbox(campaign.createdById).catch(() => { });
+        syncInbox(campaign.createdById).catch(() => {});
 
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
@@ -471,8 +453,8 @@ export const getCampaignRun = async (req, res, next) => {
         const run = await prisma.outreachCampaignRun.findFirst({ where: { id: req.params.runId, campaignId: campaign.id } });
         if (!run) return next(new ApiError(404, "Run not found"));
         // FIX: Reconcile replies and trigger background sync here too
-        await trackEmailInbox(campaign.createdById).catch(() => { });
-        syncInbox(campaign.createdById).catch(() => { });
+        await trackEmailInbox(campaign.createdById).catch(() => {});
+        syncInbox(campaign.createdById).catch(() => {});
         await healRun(run, campaign.createdById);
 
         const page = Math.max(1, parseInt(req.query.page) || 1);
