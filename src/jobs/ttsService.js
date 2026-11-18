@@ -1,6 +1,6 @@
 // services/ttsService.js
 //
-// AI Voices using ElevenLabs API.
+// AI Voices using ElevenLabs API (Dynamic Voice Selection).
 // Uses native Node.js fetch, no external TTS libraries required.
 
 import fs from "fs/promises";
@@ -11,22 +11,36 @@ const AUDIO_SAMPLE_RATE = 44100;
 const MIN_SPEED = 0.92;
 const MAX_SPEED = 1.18;
 
-// Official ElevenLabs Free-Tier Default Voices
-// These are globally available to all accounts via the API without a paid subscription.
-const VOICE_MAP = {
-  hi: {
-    female: 'BFd5oBc2DDna33pSi4Gf', // Alicia (Polished Global Anchor)
-    male: 'ktkP7Nsj67dw2zcplQYt',   // Lawrence (Bright and Informative)
-  },
-  en: {
-    female: 'BFd5oBc2DDna33pSi4Gf', // Alicia
-    male: 'ktkP7Nsj67dw2zcplQYt',   // Lawrence
-  }
-};
+// Cache to hold allowed voices so we only fetch them once per server lifecycle
+let cachedVoices = null;
 
 export function countSpokenWords(text) {
   const matches = String(text).match(/[A-Za-z0-9\u0900-\u097F]+/g);
   return matches ? matches.length : 0;
+}
+
+// 👇 Dynamically fetches authorized voices for your free-tier API key
+async function getSafeVoiceId(apiKey, targetGender = 'female') {
+  if (!cachedVoices) {
+    const response = await fetch('https://api.elevenlabs.io/v1/voices', {
+      headers: { 'xi-api-key': apiKey }
+    });
+    
+    if (!response.ok) {
+      throw new Error("Failed to fetch authorized voices from ElevenLabs.");
+    }
+    
+    const data = await response.json();
+    cachedVoices = data.voices;
+  }
+
+  // Look for the first voice that explicitly matches the requested gender in its metadata
+  const voice = cachedVoices.find(v => 
+    v.labels && v.labels.gender && v.labels.gender.toLowerCase() === targetGender
+  );
+
+  // If a gender match is found, return it. Otherwise, return the very first voice guaranteed to work.
+  return voice ? voice.voice_id : cachedVoices[0].voice_id;
 }
 
 async function synthesizeRaw(text, outputPath, lang, voiceId = 'female') {
@@ -35,10 +49,10 @@ async function synthesizeRaw(text, outputPath, lang, voiceId = 'female') {
     throw new Error("ELEVENLABS_API_KEY is not set in your .env file");
   }
 
-  // Fallback to female voice if an invalid voiceId is passed
-  const specificVoice = VOICE_MAP[lang]?.[voiceId] || VOICE_MAP['en']['female'];
+  // Get a guaranteed safe ID directly from your ElevenLabs account permissions
+  const safeVoiceId = await getSafeVoiceId(apiKey, voiceId);
 
-  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${specificVoice}`, {
+  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${safeVoiceId}`, {
     method: 'POST',
     headers: {
       'Accept': 'audio/mpeg',
