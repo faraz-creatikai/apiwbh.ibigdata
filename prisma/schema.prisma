@@ -86,6 +86,9 @@ model Admin {
 
   sentEmails SentEmail[]
 
+  createdJourneys              Journey[]                     @relation("JourneyCreator")
+  journeyAiProviderCredentials JourneyAIProviderCredential[]
+
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   scheduledPosts ScheduledPost[]
@@ -114,6 +117,268 @@ enum AIProvider {
   MISTRAL
   GROQ
   CUSTOM
+}
+
+enum JourneyStatus {
+  draft
+  active
+  paused
+  archived
+}
+
+enum JourneyNodeType {
+  trigger
+  delay
+  whatsapp
+  email
+  sms
+  condition
+  assign
+  ai_agent
+  end
+}
+
+enum ExecutionStatus {
+  queued
+  running
+  completed
+  failed
+  cancelled
+}
+
+enum EnrollmentStatus {
+  active
+  completed
+  failed
+  cancelled
+}
+
+enum JourneyLogLevel {
+  info
+  warning
+  error
+}
+
+// ==========================================
+// JOURNEYS
+// ==========================================
+
+model JourneyAIProviderCredential {
+  id String @id @default(cuid()) @db.VarChar(191)
+
+  adminId String @db.VarChar(191)
+  admin   Admin  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  provider AIProvider
+
+  // Always store encrypted API keys, never plaintext.
+  encryptedApiKey String @db.Text
+
+  // Optional masked identifier, not the actual API key.
+  keyHint String? @db.VarChar(30)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // One credential per provider per admin.
+  @@unique([adminId, provider])
+  @@index([provider])
+}
+
+model Journey {
+  id          String  @id @default(cuid()) @db.VarChar(191)
+  name        String  @db.VarChar(191)
+  description String? @db.Text
+
+  status JourneyStatus @default(draft)
+
+  // Admin who created this journey.
+  createdById String? @db.VarChar(191)
+  createdBy   Admin?  @relation("JourneyCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  nodes       JourneyNode[]
+  edges       JourneyEdge[]
+  executions  JourneyExecution[]
+  enrollments JourneyEnrollment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdById])
+  @@index([updatedAt])
+}
+
+// ==========================================
+// JOURNEY NODES
+// ==========================================
+
+model JourneyNode {
+  id String @id @default(cuid()) @db.VarChar(191)
+
+  journeyId String  @db.VarChar(191)
+  journey   Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  type        JourneyNodeType
+  title       String          @db.VarChar(191)
+  description String?         @db.Text
+
+  // React Flow canvas position.
+  positionX Float @default(0)
+  positionY Float @default(0)
+
+  // Node configuration: message, delay, condition, provider, etc.
+  config Json?
+
+  actionId String? @db.VarChar(191)
+  category String? @db.VarChar(100)
+  icon     String? @db.VarChar(100)
+  color    String? @db.VarChar(50)
+
+  outgoingEdges JourneyEdge[] @relation("EdgeSource")
+  incomingEdges JourneyEdge[] @relation("EdgeTarget")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([journeyId])
+  @@index([type])
+}
+
+// ==========================================
+// JOURNEY EDGES / CONNECTIONS
+// ==========================================
+
+model JourneyEdge {
+  id String @id @default(cuid()) @db.VarChar(191)
+
+  journeyId String  @db.VarChar(191)
+  journey   Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  sourceNodeId String      @db.VarChar(191)
+  sourceNode   JourneyNode @relation("EdgeSource", fields: [sourceNodeId], references: [id], onDelete: Cascade)
+
+  targetNodeId String      @db.VarChar(191)
+  targetNode   JourneyNode @relation("EdgeTarget", fields: [targetNodeId], references: [id], onDelete: Cascade)
+
+  // For condition branches: yes, no, or default.
+  sourceHandle String? @db.VarChar(50)
+  targetHandle String? @db.VarChar(50)
+
+  label    String? @db.VarChar(100)
+  edgeType String? @db.VarChar(50)
+  animated Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([journeyId])
+  @@index([sourceNodeId])
+  @@index([targetNodeId])
+}
+
+// ==========================================
+// JOURNEY EXECUTIONS
+// ==========================================
+
+model JourneyExecution {
+  id String @id @default(cuid()) @db.VarChar(191)
+
+  journeyId String  @db.VarChar(191)
+  journey   Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  customerId String?   @db.VarChar(191)
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  status ExecutionStatus @default(queued)
+
+  // True for simulated/test executions; false for real executions.
+  isTest Boolean @default(false)
+
+  // Current node being processed by the execution engine.
+  currentNodeId String? @db.VarChar(191)
+
+  // Data received when the journey was triggered.
+  triggerData Json?
+
+  // Shared execution data, including AI Agent results.
+  context      Json?
+  errorMessage String? @db.Text
+  retryCount   Int     @default(0)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  logs      ExecutionLog[]
+  nextRunAt DateTime?
+  lockedAt  DateTime?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([status, nextRunAt])
+  @@index([status, lockedAt])
+  @@index([journeyId, status])
+  @@index([customerId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ==========================================
+// JOURNEY ENROLLMENTS
+// ==========================================
+
+model JourneyEnrollment {
+  id String @id @default(cuid()) @db.VarChar(191)
+
+  journeyId String  @db.VarChar(191)
+  journey   Journey @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+
+  customerId String   @db.VarChar(191)
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  status EnrollmentStatus @default(active)
+
+  // Execution currently associated with this enrollment.
+  executionId String? @unique @db.VarChar(191)
+
+  // Enrollment source, for example manual, form, contact_created.
+  source String? @db.VarChar(100)
+
+  enrolledAt  DateTime  @default(now())
+  completedAt DateTime?
+  exitedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([journeyId, customerId])
+  @@index([journeyId, status])
+  @@index([customerId, status])
+  @@index([enrolledAt])
+}
+
+// ==========================================
+// EXECUTION LOGS
+// ==========================================
+
+model ExecutionLog {
+  id String @id @default(cuid()) @db.VarChar(191)
+
+  executionId String           @db.VarChar(191)
+  execution   JourneyExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  nodeId  String?         @db.VarChar(191)
+  level   JourneyLogLevel @default(info)
+  message String          @db.Text
+
+  // Extra details such as API response or error information.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([executionId])
+  @@index([nodeId])
+  @@index([level])
+  @@index([createdAt])
 }
 
 model OutreachCampaign {
@@ -916,6 +1181,9 @@ model Customer {
 
   // Customers who have archieved this customer
   archivedBy CustomerArchive[] @relation("CustomerArchivedByAdmin")
+
+  executions  JourneyExecution[]
+  enrollments JourneyEnrollment[]
 
   // INDEXES (put here at bottom)
   @@index([ContactNumber])

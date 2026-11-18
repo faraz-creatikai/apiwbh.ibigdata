@@ -56,6 +56,7 @@ import activityRoutes from "./routes/activityRoutes.js";
 import sarvamCallingRoutes from "./routes/sarvamCallingRoutes.js";
 import outreachCampaignRoute from "./routes/route.outreachCampaign.js";
 import channelTrackingRoutes from "./routes/route.channelTracking.js";
+import journeyRoute from "./routes/route.journey.js";
 
 const app = express();
 app.use(cookieParser());
@@ -73,6 +74,7 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 app.use("/api/channel-tracking", channelTrackingRoutes);
 
 // Routes
+app.use("/api/journey",journeyRoute);
 app.use("/api/brand", brandRoutes);
 app.use("/api/sarvam", sarvamCallingRoutes);
 app.use("/api/user", requestUserRoutes);
