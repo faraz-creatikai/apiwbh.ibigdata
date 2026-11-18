@@ -97,7 +97,13 @@ export const generateVideoScript = async (req, res, next) => {
 
 export const renderVideo = async (req, res, next) => {
   try {
-    const { mode = "hinglish", voiceoverMethod = "ai_voice", aiVoice = "female_1" } = req.body;
+    let { mode = "hinglish", voiceoverMethod = "ai_voice", aiVoice = "female" } = req.body;
+
+    if (aiVoice.includes("male") && !aiVoice.includes("female")) {
+      aiVoice = "male";
+    } else {
+      aiVoice = "female";
+    }
     const photoFileNames = parseArrayField(req.body.photoFileNames);
     const scriptContent = parseArrayField(req.body.scriptContent);
     const uploadedVoiceover = req.file; // multer disk storage -> req.file.path already on disk

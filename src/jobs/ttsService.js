@@ -11,22 +11,16 @@ const AUDIO_SAMPLE_RATE = 44100;
 const MIN_SPEED = 0.92;
 const MAX_SPEED = 1.18;
 
-// Map your frontend UI IDs to real ElevenLabs Voice IDs.
-// These are default ElevenLabs voices. You can replace these IDs 
-// with your cloned voices from the ElevenLabs VoiceLab.
-// Map your frontend UI IDs to ElevenLabs' New Default Free-Tier Voices
+// Official ElevenLabs Free-Tier Default Voices
+// These are globally available to all accounts via the API without a paid subscription.
 const VOICE_MAP = {
   hi: {
-    female_1: 'BFd5oBc2DDna33pSi4Gf', // Alicia - Polished Global Anchor
-    male_1: 'ktkP7Nsj67dw2zcplQYt',   // Lawrence - Bright and Informative
-    female_2: 'g7LVvkPWALzPxOQbF6OE', // Jade - Upbeat and Natural
-    male_2: 'l7kNoIfnJKPg7779LI2t'    // Eddie - Natural and Helpful
+    female: 'BFd5oBc2DDna33pSi4Gf', // Alicia (Polished Global Anchor)
+    male: 'ktkP7Nsj67dw2zcplQYt',   // Lawrence (Bright and Informative)
   },
   en: {
-    female_1: 'BFd5oBc2DDna33pSi4Gf', // Alicia - Polished Global Anchor
-    male_1: 'ktkP7Nsj67dw2zcplQYt',   // Lawrence - Bright and Informative
-    female_2: 'g7LVvkPWALzPxOQbF6OE', // Jade - Upbeat and Natural
-    male_2: 'l7kNoIfnJKPg7779LI2t'    // Eddie - Natural and Helpful
+    female: 'BFd5oBc2DDna33pSi4Gf', // Alicia
+    male: 'ktkP7Nsj67dw2zcplQYt',   // Lawrence
   }
 };
 
@@ -35,15 +29,14 @@ export function countSpokenWords(text) {
   return matches ? matches.length : 0;
 }
 
-// 👇 Replaced Microsoft Edge logic with ElevenLabs API
-async function synthesizeRaw(text, outputPath, lang, voiceId = 'female_1') {
+async function synthesizeRaw(text, outputPath, lang, voiceId = 'female') {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
     throw new Error("ELEVENLABS_API_KEY is not set in your .env file");
   }
 
-  // Fallback to a default voice if the mapped one is missing
-  const specificVoice = VOICE_MAP[lang]?.[voiceId] || VOICE_MAP['en']['female_1'];
+  // Fallback to female voice if an invalid voiceId is passed
+  const specificVoice = VOICE_MAP[lang]?.[voiceId] || VOICE_MAP['en']['female'];
 
   const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${specificVoice}`, {
     method: 'POST',
@@ -54,7 +47,6 @@ async function synthesizeRaw(text, outputPath, lang, voiceId = 'female_1') {
     },
     body: JSON.stringify({
       text: text,
-      // eleven_multilingual_v2 is the best model for both English and Hindi/Hinglish
       model_id: 'eleven_multilingual_v2', 
       voice_settings: {
         stability: 0.5,
@@ -68,7 +60,6 @@ async function synthesizeRaw(text, outputPath, lang, voiceId = 'female_1') {
     throw new Error(`ElevenLabs API Error (${response.status}): ${errorText}`);
   }
 
-  // Convert the response to a buffer and save it to disk
   const arrayBuffer = await response.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
   await fs.writeFile(outputPath, buffer);
@@ -161,7 +152,7 @@ async function concatSegments(segmentPaths, workDir, outputPath) {
   return outputPath;
 }
 
-export async function createSyncedNarration({ voiceoverLines, preferredDuration, workDir, lang = "hi", voiceId = "female_1" }) {
+export async function createSyncedNarration({ voiceoverLines, preferredDuration, workDir, lang = "hi", voiceId = "female" }) {
   const segmentPaths = [];
   const speedFactors = [];
   const segmentDurations = [];
