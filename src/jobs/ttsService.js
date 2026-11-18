@@ -1,7 +1,7 @@
 // services/ttsService.js
 //
 // AI Voices using ElevenLabs API.
-// Uses exact standard payload from official ElevenLabs documentation.
+// Uses exact standard payload and ONLY Core Premade Voices.
 
 import fs from "fs/promises";
 import path from "path";
@@ -11,15 +11,16 @@ const AUDIO_SAMPLE_RATE = 44100;
 const MIN_SPEED = 0.92;
 const MAX_SPEED = 1.18;
 
-// Verified Free-Tier Premade Voices
+// STRICT FIX: These are OG Core Premade Voices, NOT "Library" voices.
+// They are guaranteed to work on the Free Tier API.
 const VOICE_MAP = {
   hi: {
-    female: '9BWtsMINqrJLrRacOk9x', // Aria
-    male: 'JBFqnCBsd6RMkjVDRZzb',   // George
+    female: 'Xb7hH8MSALEjdASTL1w4', // Alice
+    male: 'nPczCjzI2devNBz1zQjx',   // Brian
   },
   en: {
-    female: '9BWtsMINqrJLrRacOk9x', // Aria
-    male: 'JBFqnCBsd6RMkjVDRZzb',   // George
+    female: 'Xb7hH8MSALEjdASTL1w4', // Alice
+    male: 'nPczCjzI2devNBz1zQjx',   // Brian
   }
 };
 
