@@ -1,7 +1,5 @@
-
 import prisma from "../../config/prismaClient.js";
 import { processJourneyExecution } from "./journeyProcessor.js";
-
 
 const BATCH_SIZE = 10;
 const MAX_RETRIES = 3;

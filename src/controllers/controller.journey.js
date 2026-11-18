@@ -3,6 +3,7 @@ import { JourneyNodeType, JourneyStatus } from "@prisma/client";
 import ApiError from "../utils/ApiError.js";
 import prisma from "../config/prismaClient.js";
 import { processJourneyExecution } from "../jobs/journey/journeyProcessor.js";
+import { getCustomerAccessFilter } from "./controller.customer.js";
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -37,23 +38,6 @@ const isPrivileged = (admin) =>
 // Which journeys can this admin see? Privileged = all, others = own only.
 const journeyScope = (admin) =>
   isPrivileged(admin) ? {} : { createdById: admin.id };
-
-// Which customers can this admin enroll? Adjust here if your rules differ.
-const customerScope = (admin) => {
-  if (isPrivileged(admin)) return {};
-  if (admin.role === "client_admin" && admin.clientId) {
-    return { ClientId: admin.clientId };
-  }
-  if (admin.role === "city_admin" && admin.city) {
-    return { City: admin.city };
-  }
-  return {
-    OR: [
-      { CreatedById: admin.id },
-      { AssignTo: { some: { id: admin.id } } },
-    ],
-  };
-};
 
 // Load a journey the admin is allowed to access, or throw 404.
 const findJourney = async (id, admin, extra = {}) => {
@@ -388,7 +372,12 @@ export const enrollCustomers = handle(async (req, res) => {
 
   // Only customers this admin is allowed to access.
   const customers = await prisma.customer.findMany({
-    where: { id: { in: customerIds }, ...customerScope(req.admin) },
+    where: {
+      AND: [
+        { id: { in: customerIds } },
+        await getCustomerAccessFilter(req.admin),
+      ],
+    },
   });
 
   const foundIds = new Set(customers.map((c) => c.id));
@@ -496,22 +485,30 @@ export const listEnrollments = handle(async (req, res) => {
     throw new ApiError(400, "Invalid enrollment status.");
   }
 
+  // Only enrollments of customers this admin may access.
+  const access = await getCustomerAccessFilter(req.admin);
+
   const where = {
     journeyId: journey.id,
     ...(status ? { status } : {}),
-    ...(search
-      ? {
-          customer: {
-            OR: [
-              { customerName: { contains: search } },
-              { Email: { contains: search } },
-              { ContactNumber: { contains: search } },
-              { City: { contains: search } },
-              { Campaign: { contains: search } },
-            ],
-          },
-        }
-      : {}),
+    customer: {
+      AND: [
+        access,
+        ...(search
+          ? [
+              {
+                OR: [
+                  { customerName: { contains: search } },
+                  { Email: { contains: search } },
+                  { ContactNumber: { contains: search } },
+                  { City: { contains: search } },
+                  { Campaign: { contains: search } },
+                ],
+              },
+            ]
+          : []),
+      ],
+    },
   };
 
   const [enrollments, total, statusCounts] = await Promise.all([
@@ -539,7 +536,7 @@ export const listEnrollments = handle(async (req, res) => {
     prisma.journeyEnrollment.count({ where }),
     prisma.journeyEnrollment.groupBy({
       by: ["status"],
-      where: { journeyId: journey.id },
+      where: { journeyId: journey.id, customer: access },
       _count: { _all: true },
     }),
   ]);
@@ -570,7 +567,11 @@ export const getEnrollment = handle(async (req, res) => {
   await findJourney(journeyId, req.admin, { select: { id: true } });
 
   const enrollment = await prisma.journeyEnrollment.findFirst({
-    where: { id: enrollmentId, journeyId },
+    where: {
+      id: enrollmentId,
+      journeyId,
+      customer: await getCustomerAccessFilter(req.admin),
+    },
     include: {
       customer: true,
       journey: { select: { id: true, name: true, status: true } },
