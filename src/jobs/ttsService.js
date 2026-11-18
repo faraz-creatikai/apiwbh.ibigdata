@@ -1,7 +1,12 @@
 // services/ttsService.js
 //
 // AI Voices using ElevenLabs API.
-// Uses exact standard payload and ONLY Core Premade Voices.
+// Voice IDs are resolved dynamically from YOUR account (/v1/voices),
+// so no hardcoded IDs that can disappear.
+//
+// Optional manual overrides in .env:
+//   ELEVENLABS_VOICE_FEMALE=xxxx
+//   ELEVENLABS_VOICE_MALE=yyyy
 
 import fs from "fs/promises";
 import path from "path";
@@ -11,55 +16,84 @@ const AUDIO_SAMPLE_RATE = 44100;
 const MIN_SPEED = 0.92;
 const MAX_SPEED = 1.18;
 
-// STRICT FIX: These are OG Core Premade Voices, NOT "Library" voices.
-// They are guaranteed to work on the Free Tier API.
-const VOICE_MAP = {
-  hi: {
-    female: 'Xb7hH8MSALEjdASTL1w4', // Alice
-    male: 'nPczCjzI2devNBz1zQjx',   // Brian
-  },
-  en: {
-    female: 'Xb7hH8MSALEjdASTL1w4', // Alice
-    male: 'nPczCjzI2devNBz1zQjx',   // Brian
-  }
-};
-
 export function countSpokenWords(text) {
   const matches = String(text).match(/[A-Za-z0-9\u0900-\u097F]+/g);
   return matches ? matches.length : 0;
 }
 
-async function synthesizeRaw(text, outputPath, lang, voiceId = 'female') {
+// ---------------------------------------------------------------------------
+// Voice resolution
+// ---------------------------------------------------------------------------
+
+let voiceCache = null;
+
+async function loadAccountVoices(apiKey) {
+  if (voiceCache) return voiceCache;
+
+  const res = await fetch("https://api.elevenlabs.io/v1/voices", {
+    headers: { "xi-api-key": apiKey },
+  });
+  if (!res.ok) {
+    throw new Error(`ElevenLabs voice list error (${res.status}): ${await res.text()}`);
+  }
+
+  const { voices = [] } = await res.json();
+
+  // Premade voices are the ones usable on the free tier via API
+  const usable = voices.filter((v) => v.category === "premade");
+  const pool = usable.length ? usable : voices;
+
+  const pick = (gender) =>
+    pool.find((v) => v.labels?.gender === gender)?.voice_id || pool[0]?.voice_id;
+
+  voiceCache = {
+    female: process.env.ELEVENLABS_VOICE_FEMALE || pick("female"),
+    male: process.env.ELEVENLABS_VOICE_MALE || pick("male"),
+  };
+
+  if (!voiceCache.female || !voiceCache.male) {
+    voiceCache = null;
+    throw new Error("No usable ElevenLabs voices found for this API key.");
+  }
+
+  return voiceCache;
+}
+
+// ---------------------------------------------------------------------------
+// Synthesis
+// ---------------------------------------------------------------------------
+
+async function synthesizeRaw(text, outputPath, lang, voiceId = "female") {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
     throw new Error("ELEVENLABS_API_KEY is not set in your .env file");
   }
 
-  const specificVoice = VOICE_MAP[lang]?.[voiceId] || VOICE_MAP['en']['female'];
+  const voices = await loadAccountVoices(apiKey);
+  const specificVoice = voices[voiceId] || voices.female;
 
-  // Exact URL structure from official docs
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${specificVoice}?output_format=mp3_44100_128`;
 
   const response = await fetch(url, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'xi-api-key': apiKey,
-      'Content-Type': 'application/json'
+      "xi-api-key": apiKey,
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      text: text,
-      model_id: 'eleven_multilingual_v2'
-    })
+      text,
+      model_id: "eleven_multilingual_v2",
+    }),
   });
 
   if (!response.ok) {
+    if (response.status === 404) voiceCache = null; // force re-resolve next call
     const errorText = await response.text();
     throw new Error(`ElevenLabs API Error (${response.status}): ${errorText}`);
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  await fs.writeFile(outputPath, buffer);
+  await fs.writeFile(outputPath, Buffer.from(arrayBuffer));
 
   return outputPath;
 }
@@ -72,6 +106,10 @@ async function assertNonTrivialAudioFile(filePath, label) {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Audio processing
+// ---------------------------------------------------------------------------
 
 export async function trimSilence(rawPath, trimmedPath) {
   await runFfmpeg([
@@ -149,21 +187,31 @@ async function concatSegments(segmentPaths, workDir, outputPath) {
   return outputPath;
 }
 
-export async function createSyncedNarration({ voiceoverLines, preferredDuration, workDir, lang = "hi", voiceId = "female" }) {
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export async function createSyncedNarration({
+  voiceoverLines,
+  preferredDuration,
+  workDir,
+  lang = "hi",
+  voiceId = "female",
+}) {
   const segmentPaths = [];
   const speedFactors = [];
   const segmentDurations = [];
 
   for (let index = 0; index < voiceoverLines.length; index += 1) {
     const line = voiceoverLines[index];
-    
+
     const rawPath = path.join(workDir, `voice_raw_${index}.mp3`);
     const trimmedPath = path.join(workDir, `voice_trimmed_${index}.wav`);
     const segmentPath = path.join(workDir, `voice_segment_${index}.wav`);
 
     try {
       await synthesizeRaw(line, rawPath, lang, voiceId);
-      
+
       await assertNonTrivialAudioFile(rawPath, `Photo ${index + 1} voiceover`);
       await safeTrimSilence(rawPath, trimmedPath);
 
