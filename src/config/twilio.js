@@ -13,6 +13,40 @@ const client = twilio(
 
 // Add this right below your imports at the top of the file
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const rand = (min, max) => min + Math.floor(Math.random() * (max - min));
+const typingTime = (text = "") =>
+  Math.min(8000, Math.max(1500, text.length * 50 + rand(0, 800)));
+
+// ───────────────────────────────────────────────────────────────
+// Per-admin throttle (ban protection)
+// Every message waits until 45-90s have passed since that admin's previous one,
+// plus a 3-7 minute break after every 20 messages. Calls from different places
+// (campaign, templates, properties, direct) all share the same queue.
+// ───────────────────────────────────────────────────────────────
+const GAP_MIN_MS = 45_000;  // shortest wait between messages (45 seconds)
+const GAP_MAX_MS = 90_000;  // longest wait between messages (90 seconds)
+const BREAK_EVERY = 20;         // long break after this many messages
+const BREAK_MIN_MS = 180_000;   // shortest break (3 min)
+const BREAK_MAX_MS = 420_000;   // longest break (7 min)
+const lastTurn = new Map();   // adminId -> when the last message got its turn
+const sentCount = new Map();  // adminId -> messages sent so far
+const queue = new Map();      // adminId -> promise chain (keeps parallel calls in order)
+
+const waitForTurn = (adminId) => {
+  const prev = queue.get(adminId) || Promise.resolve();
+  const mine = prev.then(async () => {
+    const wait = (lastTurn.get(adminId) || 0) + rand(GAP_MIN_MS, GAP_MAX_MS) - Date.now();
+    if (wait > 0) await delay(wait);
+
+    const n = (sentCount.get(adminId) || 0) + 1;
+    sentCount.set(adminId, n);
+    if (n % BREAK_EVERY === 0) await delay(rand(BREAK_MIN_MS, BREAK_MAX_MS));
+
+    lastTurn.set(adminId, Date.now());
+  });
+  queue.set(adminId, mine.catch(() => { }));
+  return mine;
+};
 
 //twilio api
 export const sendWhatsApp = async (to, message, imageUrl = null) => {
@@ -71,7 +105,7 @@ export const sendBaileysWhatsApp = async (adminId, to, message, imageUrl = null,
 
       let retries = 0;
       while (getWhatsAppConnectionState(adminId).status !== 'connected' && retries < 15) {
-        await delay(1000);
+        await delay(10000);
         retries++;
       }
 
@@ -108,14 +142,16 @@ export const sendBaileysWhatsApp = async (adminId, to, message, imageUrl = null,
 
     // 3. Humanize delay
     if (humanize) {
+      await waitForTurn(adminId);                       // the 45-90s gap between messages
+      sock = getWhatsAppSocket(adminId) || sock;        // socket may have reconnected while waiting
+
       await sock.presenceSubscribe(jid).catch(() => { });
-      await delay(200);
+      await delay(rand(1500, 4000));
 
       const isRecording = mediaType === "video";
-      await sock.sendPresenceUpdate(isRecording ? "recording" : "composing", jid).catch(() => { });;
+      await sock.sendPresenceUpdate(isRecording ? "recording" : "composing", jid).catch(() => { });
 
-      const artificialDelay = isFileMedia ? 800 : (1200 + Math.floor(Math.random() * 1000));
-      await delay(artificialDelay);
+      await delay(isFileMedia ? rand(2000, 4000) : typingTime(message));
 
       await sock.sendPresenceUpdate("paused", jid).catch(() => { });
     }
@@ -230,9 +266,9 @@ export const sendBaileysWhatsApp = async (adminId, to, message, imageUrl = null,
 
     // If it's a location, send the caption text separately as a follow-up message
     if (mediaType === "location" && message) {
-  await delay(500);
-  await sock.sendMessage(jid, { text: message }).catch(() => {});
-}
+      await delay(500);
+      await sock.sendMessage(jid, { text: message }).catch(() => { });
+    }
 
     console.log("✅ WhatsApp sent:", result?.key?.id);
     return result;
@@ -283,16 +319,17 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
     const jid = `${to}@s.whatsapp.net`;
 
     // 2. 🛑 FIX: Safely wrap presence updates so they never crash the actual send
+    await waitForTurn(adminId);                         // always: the controller only sets humanize for the first customer
+    sock = getWhatsAppSocket(adminId) || sock;          // socket may have reconnected while waiting
+
     if (humanize) {
       await sock.presenceSubscribe(jid).catch(() => { });
-      await delay(200);
+      await delay(rand(1500, 4000));
 
       const isRecording = mediaType === "video";
-      // Added .catch() so a failed typing indicator doesn't kill the message
       await sock.sendPresenceUpdate(isRecording ? "recording" : "composing", jid).catch(() => { });
 
-      const artificialDelay = fileBuffer ? 800 : (1200 + Math.floor(Math.random() * 1000));
-      await delay(artificialDelay);
+      await delay(fileBuffer ? rand(2000, 4000) : typingTime(message));
 
       await sock.sendPresenceUpdate("paused", jid).catch(() => { });
     }
@@ -338,12 +375,12 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
     let result;
     try {
       result = await sock.sendMessage(jid, content);
-      
+
     } catch (sendError) {
       // If it STILL throws a connection closed (e.g. timeout during a large file upload), retry once.
       if (sendError.message.toLowerCase().includes('close') || sendError.message.toLowerCase().includes('timeout')) {
         console.warn("⚠️ WhatsApp connection dropped during upload. Retrying once...");
-        await delay(2000);
+        await delay(10000);
         sock = getWhatsAppSocket(adminId); // Grab fresh socket reference
         if (sock && getWhatsAppConnectionState(adminId).status === 'connected') {
           result = await sock.sendMessage(jid, content);
@@ -356,15 +393,15 @@ export const sendBaileysWhatsAppDirect = async (adminId, to, message, fileBuffer
     }
 
     recordSend({
-        adminId, channel: "whatsapp_baileys", source: extra.source || "other",
-        runId: extra.runId ?? null, customerId: extra.customerId ?? null,
-        recipient: String(to),
-        providerMessageId: result?.key?.id, status: "sent"
-      });
+      adminId, channel: "whatsapp_baileys", source: extra.source || "other",
+      runId: extra.runId ?? null, customerId: extra.customerId ?? null,
+      recipient: String(to),
+      providerMessageId: result?.key?.id, status: "sent"
+    });
 
     // Follow up location with caption if needed safely
     if (mediaType === "location" && message) {
-      await delay(500);
+      await delay(10000);
       await sock.sendMessage(jid, { text: message }).catch(() => { });
     }
 
