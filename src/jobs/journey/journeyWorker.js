@@ -109,6 +109,7 @@ export const runJourneyWorker = async (req, res) => {
       status: "queued",
       isTest: false,
       lockedAt: null,
+      journey: { status: "active" },   // paused / archived journeys stop running
       OR: [{ nextRunAt: null }, { nextRunAt: { lte: now } }],
     };
 

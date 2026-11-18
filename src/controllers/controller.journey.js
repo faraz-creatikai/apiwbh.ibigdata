@@ -1,4 +1,4 @@
-import { JourneyNodeType, JourneyStatus } from "@prisma/client";
+import { JourneyNodeType, JourneyStatus, Prisma } from "@prisma/client";
 
 import ApiError from "../utils/ApiError.js";
 import prisma from "../config/prismaClient.js";
@@ -78,6 +78,74 @@ const buildTriggerData = (customer, enrollmentId) => {
   };
 };
 
+// Validates the React Flow graph sent by the builder.
+const validateGraph = (nodes, edges) => {
+  if (!Array.isArray(nodes) || !Array.isArray(edges)) {
+    throw new ApiError(400, "Nodes and edges must be arrays.");
+  }
+
+  const validTypes = Object.values(JourneyNodeType);
+  const nodeIds = new Set();
+
+  for (const node of nodes) {
+    if (
+      !node.id ||
+      !validTypes.includes(node.type) ||
+      !node.data?.title ||
+      !Number.isFinite(node.position?.x) ||
+      !Number.isFinite(node.position?.y)
+    ) {
+      throw new ApiError(400, "Invalid node data.");
+    }
+    if (nodeIds.has(node.id)) throw new ApiError(400, "Duplicate node ID found.");
+    nodeIds.add(node.id);
+  }
+
+  for (const edge of edges) {
+    if (!edge.id || !nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      throw new ApiError(400, "Invalid edge connection.");
+    }
+  }
+};
+
+// React Flow node/edge -> database row.
+const nodeRow = (node, journeyId) => ({
+  id: node.id,
+  journeyId,
+  type: node.type,
+  title: node.data.title,
+  description: node.data.description ?? null,
+  positionX: node.position.x,
+  positionY: node.position.y,
+  config: node.data.config ?? Prisma.JsonNull,
+  actionId: node.data.actionId ?? null,
+  category: node.data.category ?? null,
+  icon: node.data.icon ?? null,
+  color: node.data.color ?? null,
+});
+
+const edgeRow = (edge, journeyId) => ({
+  id: edge.id,
+  journeyId,
+  sourceNodeId: edge.source,
+  targetNodeId: edge.target,
+  sourceHandle: edge.sourceHandle ?? null,
+  targetHandle: edge.targetHandle ?? null,
+  label: edge.label ?? null,
+  edgeType: edge.type ?? null,
+  animated: edge.animated ?? false,
+});
+
+// An active journey must have a trigger node.
+const assertHasTrigger = async (db, journeyId) => {
+  const count = await db.journeyNode.count({
+    where: { journeyId, type: "trigger" },
+  });
+  if (count === 0) {
+    throw new ApiError(400, "An active journey must contain a trigger node.");
+  }
+};
+
 // ─────────────────────────────────────────────────────────────
 // Journeys
 // ─────────────────────────────────────────────────────────────
@@ -110,34 +178,7 @@ export const createJourney = handle(async (req, res) => {
 
   const nodes = body.nodes ?? [];
   const edges = body.edges ?? [];
-  if (!Array.isArray(nodes) || !Array.isArray(edges)) {
-    throw new ApiError(400, "Nodes and edges must be arrays.");
-  }
-
-  const validTypes = Object.values(JourneyNodeType);
-  const nodeIds = new Set();
-
-  for (const node of nodes) {
-    if (
-      !node.id ||
-      !validTypes.includes(node.type) ||
-      !node.data?.title ||
-      !Number.isFinite(node.position?.x) ||
-      !Number.isFinite(node.position?.y)
-    ) {
-      throw new ApiError(400, "Invalid node data.");
-    }
-    if (nodeIds.has(node.id)) {
-      throw new ApiError(400, "Duplicate node ID found.");
-    }
-    nodeIds.add(node.id);
-  }
-
-  for (const edge of edges) {
-    if (!edge.id || !nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
-      throw new ApiError(400, "Invalid edge connection.");
-    }
-  }
+  validateGraph(nodes, edges);
 
   const status = Object.values(JourneyStatus).includes(body.status)
     ? body.status
@@ -155,36 +196,12 @@ export const createJourney = handle(async (req, res) => {
 
     if (nodes.length) {
       await tx.journeyNode.createMany({
-        data: nodes.map((node) => ({
-          id: node.id,
-          journeyId: created.id,
-          type: node.type,
-          title: node.data.title,
-          description: node.data.description ?? null,
-          positionX: node.position.x,
-          positionY: node.position.y,
-          config: node.data.config ?? undefined,
-          actionId: node.data.actionId ?? null,
-          category: node.data.category ?? null,
-          icon: node.data.icon ?? null,
-          color: node.data.color ?? null,
-        })),
+        data: nodes.map((n) => nodeRow(n, created.id)),
       });
     }
-
     if (edges.length) {
       await tx.journeyEdge.createMany({
-        data: edges.map((edge) => ({
-          id: edge.id,
-          journeyId: created.id,
-          sourceNodeId: edge.source,
-          targetNodeId: edge.target,
-          sourceHandle: edge.sourceHandle ?? null,
-          targetHandle: edge.targetHandle ?? null,
-          label: edge.label ?? null,
-          edgeType: edge.type ?? null,
-          animated: edge.animated ?? false,
-        })),
+        data: edges.map((e) => edgeRow(e, created.id)),
       });
     }
 
@@ -199,6 +216,139 @@ export const createJourney = handle(async (req, res) => {
     message: "Journey created successfully.",
     data: journey,
   });
+});
+
+export const getJourney = handle(async (req, res) => {
+  const journey = await findJourney(req.params.id, req.admin, {
+    include: {
+      nodes: true,
+      edges: true,
+      _count: { select: { executions: true, enrollments: true } },
+    },
+  });
+
+  res.json({ success: true, data: journey });
+});
+
+// Partial update: name, description, status and/or the whole graph.
+// nodes and edges must be sent together; they replace the saved graph.
+export const updateJourney = handle(async (req, res) => {
+  const body = req.body ?? {};
+  const journeyId = req.params.id;
+  await findJourney(journeyId, req.admin, { select: { id: true } });
+
+  const data = {};
+
+  if (body.name !== undefined) {
+    const name = String(body.name).trim();
+    if (!name) throw new ApiError(400, "Journey name cannot be empty.");
+    data.name = name;
+  }
+  if (body.description !== undefined) data.description = body.description;
+  if (body.status !== undefined) {
+    if (!Object.values(JourneyStatus).includes(body.status)) {
+      throw new ApiError(400, "Invalid journey status.");
+    }
+    data.status = body.status;
+  }
+
+  const replaceGraph = body.nodes !== undefined || body.edges !== undefined;
+  if (replaceGraph && (body.nodes === undefined || body.edges === undefined)) {
+    throw new ApiError(400, "Send nodes and edges together.");
+  }
+  const nodes = body.nodes ?? [];
+  const edges = body.edges ?? [];
+  if (replaceGraph) validateGraph(nodes, edges);
+
+  const journey = await prisma.$transaction(async (tx) => {
+    await tx.journey.update({ where: { id: journeyId }, data });
+
+    if (replaceGraph) {
+      const existing = await tx.journeyNode.findMany({
+        where: { journeyId },
+        select: { id: true },
+      });
+      const existingIds = new Set(existing.map((n) => n.id));
+
+      // Edges have no outside references, so rebuild them.
+      await tx.journeyEdge.deleteMany({ where: { journeyId } });
+
+      // Nodes keep their IDs so running executions can still find them.
+      await tx.journeyNode.deleteMany({
+        where: { journeyId, id: { notIn: nodes.map((n) => n.id) } },
+      });
+
+      for (const node of nodes.filter((n) => existingIds.has(n.id))) {
+        const { id, journeyId: _j, ...row } = nodeRow(node, journeyId);
+        await tx.journeyNode.update({ where: { id }, data: row });
+      }
+
+      const fresh = nodes.filter((n) => !existingIds.has(n.id));
+      if (fresh.length) {
+        await tx.journeyNode.createMany({
+          data: fresh.map((n) => nodeRow(n, journeyId)),
+        });
+      }
+      if (edges.length) {
+        await tx.journeyEdge.createMany({
+          data: edges.map((e) => edgeRow(e, journeyId)),
+        });
+      }
+    }
+
+    const current = await tx.journey.findUnique({
+      where: { id: journeyId },
+      select: { status: true },
+    });
+    if (current.status === "active") await assertHasTrigger(tx, journeyId);
+
+    return tx.journey.findUnique({
+      where: { id: journeyId },
+      include: { nodes: true, edges: true },
+    });
+  });
+
+  res.json({
+    success: true,
+    message: "Journey updated successfully.",
+    data: journey,
+  });
+});
+
+// draft / active / paused / archived
+export const updateJourneyStatus = handle(async (req, res) => {
+  const status = req.body?.status;
+  if (!Object.values(JourneyStatus).includes(status)) {
+    throw new ApiError(400, "Invalid journey status.");
+  }
+
+  const { id } = await findJourney(req.params.id, req.admin, {
+    select: { id: true },
+  });
+  if (status === "active") await assertHasTrigger(prisma, id);
+
+  const journey = await prisma.journey.update({
+    where: { id },
+    data: { status },
+    select: { id: true, name: true, status: true, updatedAt: true },
+  });
+
+  res.json({
+    success: true,
+    message: `Journey is now ${status}.`,
+    data: journey,
+  });
+});
+
+// Deletes the journey with its nodes, edges, enrollments and execution history.
+export const deleteJourney = handle(async (req, res) => {
+  const { id } = await findJourney(req.params.id, req.admin, {
+    select: { id: true },
+  });
+
+  await prisma.journey.delete({ where: { id } });
+
+  res.json({ success: true, message: "Journey deleted successfully." });
 });
 
 // ─────────────────────────────────────────────────────────────
