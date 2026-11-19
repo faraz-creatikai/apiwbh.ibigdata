@@ -26,6 +26,7 @@ const REACTIVATE = { status: "active", completedAt: null, exitedAt: null };
 export const runJourneyWorker = async (req, res) => {
   try {
     const cronSecret = process.env.JOURNEY_CRON_SECRET;
+    
     if (!cronSecret) {
       return res
         .status(500)
