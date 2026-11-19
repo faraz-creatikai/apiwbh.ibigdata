@@ -34,7 +34,7 @@ journeyRoute.get("/analytics", getAnalytics);
 journeyRoute.get("/", listJourneys);
 journeyRoute.post("/", createJourney);
 journeyRoute.get("/:id", getJourney);
-journeyRoute.patch("/:id", updateJourney);
+journeyRoute.put("/:id", updateJourney);
 journeyRoute.patch("/:id/status", updateJourneyStatus);
 journeyRoute.delete("/:id", deleteJourney);
 
