@@ -63,7 +63,7 @@ export const nodeHandlers = {
 
             const formattedPhone = toWaNumber(to.phone, to.CountryCode);
 
-            await sendBaileysWhatsApp(journey.createdById, formattedPhone, message, imageUrl = null, extra = {})
+            await sendBaileysWhatsApp(journey.createdById, formattedPhone, message)
             return { message: `${node.title}: baileys whatsapp sent to ${to}.` };
 
 
