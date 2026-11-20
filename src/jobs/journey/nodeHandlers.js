@@ -1,5 +1,6 @@
 import { sendEmail } from "../../config/mailer.js";
 import { sendBaileysWhatsApp } from "../../config/twilio.js";
+import { toWaNumber } from "../../utils/phone.js";
 
 /**
  * One entry per node type that does real work. journeyProcessor.js calls
@@ -46,9 +47,9 @@ export const nodeHandlers = {
     },
 
     async whatsapp({ node, config, triggerData, execution, journey }) {
-        const to = String(triggerData.whatsapp ?? "").trim();
-        console.log("to is ",to, "trigger is ",triggerData)
-        if (!to) {
+        const to = triggerData;
+        console.log("to is ",to, "trigger is ",triggerData, " provider is ", config.provider, " or ", config)
+        if (!to.phone) {
             return { level: "warning", message: `${node.title} skipped: customer has no whatsapp` };
         }
         if (config.provider === "baileys") {
@@ -60,7 +61,9 @@ export const nodeHandlers = {
 
             console.log(" message: ", message, "enrolled:  ",to, "provider ",config.provider)
 
-            await sendBaileysWhatsApp(journey.createdById, to, message, imageUrl = null, extra = {})
+            const formattedPhone = toWaNumber(to.phone, to.CountryCode);
+
+            await sendBaileysWhatsApp(journey.createdById, formattedPhone, message, imageUrl = null, extra = {})
             return { message: `${node.title}: baileys whatsapp sent to ${to}.` };
 
 
