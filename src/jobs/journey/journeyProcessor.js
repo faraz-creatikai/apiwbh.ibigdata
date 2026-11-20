@@ -1,4 +1,5 @@
 import prisma from "../../config/prismaClient.js";
+import { nodeHandlers } from "./nodeHandlers.js";
 
 
 const MAX_STEPS = 100;
@@ -164,12 +165,21 @@ export async function processJourneyExecution(executionId, mode) {
 
         case "email":
         case "whatsapp":
-        case "sms":
-          message = isTest
-            ? `${node.title} simulated successfully. No real message was sent.`
-            : `${node.title} reached. Provider integration is not connected; no real message was sent.`;
+        case "sms": {
+          // Live runs use the node handler (nodeHandlers.js) when one exists.
+          const handler = nodeHandlers[node.type];
+          if (handler && !isTest) {
+            const result = await handler({ node, config, triggerData, execution, journey });
+            message = result.message;
+            level = result.level ?? "info";
+          } else {
+            message = isTest
+              ? `${node.title} simulated successfully. No real message was sent.`
+              : `${node.title} reached. Provider integration is not connected; no real message was sent.`;
+          }
           edge = edgeFrom(node.id);
           break;
+        }
 
         case "delay": {
           const duration = Number(config.duration);

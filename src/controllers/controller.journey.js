@@ -4,6 +4,7 @@ import ApiError from "../utils/ApiError.js";
 import prisma from "../config/prismaClient.js";
 import { processJourneyExecution } from "../jobs/journey/journeyProcessor.js";
 import { getCustomerAccessFilter } from "./controller.customer.js";
+import { buildTriggerData } from "../jobs/journey/journeyTrigger.js";
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -52,7 +53,7 @@ const findJourney = async (id, admin, extra = {}) => {
 // Data the journey engine receives when a customer is enrolled.
 // Contact "status" no longer exists, so lead_status maps to LeadTemperature
 // and dealClosed is exposed separately for condition nodes.
-const buildTriggerData = (customer, enrollmentId) => {
+/* const buildTriggerData = (customer, enrollmentId) => {
   const [firstName = "", ...rest] = (customer.customerName || "")
     .trim()
     .split(/\s+/);
@@ -76,7 +77,7 @@ const buildTriggerData = (customer, enrollmentId) => {
     customFields: customer.CustomerFields,
     enrollmentId,
   };
-};
+}; */
 
 // Validates the React Flow graph sent by the builder.
 const validateGraph = (nodes, edges) => {

@@ -12,6 +12,7 @@ import { callingAgentPrompt } from "../ai/prompts/callingAgentPrompt.js";
 import { notifyCustomerCreated } from "../jobs/notification/notificationEvents.js";
 import { diffFields, logActivity } from "../utils/activityLogger.js";
 import { cleanNationalNumber, DEFAULT_COUNTRY_CODE } from "../utils/phone.js";
+import { fireJourneyEvent } from "../jobs/journey/journeyTrigger.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -1610,6 +1611,8 @@ export const createCustomer = async (req, res, next) => {
       customerId: newCustomer.id,
       meta: { campaign: newCustomer.Campaign, city: newCustomer.City },
     });
+
+    fireJourneyEvent("new_lead_added", newCustomer, admin._id || admin.id);
 
     /* web hook trigger n8n  */
     /*     const automationRes = await fetch("http://localhost:5678/webhook/customer-created", {
