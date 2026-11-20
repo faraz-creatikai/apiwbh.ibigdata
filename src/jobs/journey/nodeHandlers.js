@@ -33,7 +33,10 @@ export const nodeHandlers = {
         }
 
         const subject = fill(config.subject, triggerData) || "(no subject)";
-        const html = fill(config.message, triggerData, escapeHtml).replace(/\n/g, "<br>");
+        const html =
+            config.messageType === "template"
+                ? fill(config.message, triggerData)
+                : fill(config.message, triggerData, escapeHtml).replace(/\n/g, "<br>");
 
         // Sent from the journey owner's connected mailbox (default SMTP if none).
         await sendEmail(to, subject, html, {
@@ -48,7 +51,7 @@ export const nodeHandlers = {
 
     async whatsapp({ node, config, triggerData, execution, journey }) {
         const to = triggerData;
-        console.log("to is ",to, "trigger is ",triggerData, " provider is ", config.provider, " or ", config)
+        console.log("to is ", to, "trigger is ", triggerData, " provider is ", config.provider, " or ", config)
         if (!to.phone) {
             return { level: "warning", message: `${node.title} skipped: customer has no whatsapp` };
         }
@@ -59,7 +62,7 @@ export const nodeHandlers = {
 
             const message = config.message;
 
-            console.log(" message: ", message, "enrolled:  ",to, "provider ",config.provider)
+            console.log(" message: ", message, "enrolled:  ", to, "provider ", config.provider)
 
             const formattedPhone = toWaNumber(to.phone, to.CountryCode);
 
