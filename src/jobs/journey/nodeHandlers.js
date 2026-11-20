@@ -47,6 +47,7 @@ export const nodeHandlers = {
 
     async whatsapp({ node, config, triggerData, execution, journey }) {
         const to = String(triggerData.whatsapp ?? "").trim();
+        console.log("to is ",to, "trigger is ",triggerData)
         if (!to) {
             return { level: "warning", message: `${node.title} skipped: customer has no whatsapp` };
         }
