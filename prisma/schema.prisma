@@ -135,6 +135,7 @@ enum JourneyNodeType {
   condition
   assign
   ai_agent
+  enrolled_leads
   end
 }
 
