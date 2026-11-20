@@ -57,6 +57,8 @@ export const nodeHandlers = {
 
             const message = config.message;
 
+            console.log(" message: ", message, "enrolled:  ",to, "provider ",config.provider)
+
             await sendBaileysWhatsApp(journey.createdById, to, message, imageUrl = null, extra = {})
             return { message: `${node.title}: baileys whatsapp sent to ${to}.` };
 
