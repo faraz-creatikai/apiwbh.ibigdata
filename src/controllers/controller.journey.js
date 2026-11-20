@@ -165,7 +165,29 @@ export const listJourneys = handle(async (req, res) => {
           config: true,
         },
       },
-      _count: { select: { nodes: true, edges: true, executions: true } },
+      // Already enrolled customers of each journey
+      enrollments: {
+        orderBy: { enrolledAt: "desc" },
+        select: {
+          id: true,
+          status: true,
+          source: true,
+          enrolledAt: true,
+          customerId: true,
+          customer: {
+            select: {
+              id: true,
+              customerName: true,
+              Email: true,
+              ContactNumber: true,
+              CountryCode: true,
+            },
+          },
+        },
+      },
+      _count: {
+        select: { nodes: true, edges: true, executions: true, enrollments: true },
+      },
     },
   });
 
