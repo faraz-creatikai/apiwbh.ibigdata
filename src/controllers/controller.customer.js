@@ -1196,7 +1196,7 @@ export const getCustomer = async (req, res, next) => {
     }
 
     // Fix B: Move Date Range parameters directly into the DB structure
-    if (StartDate && EndDate) {
+    /* if (StartDate && EndDate) {
       // Assumes standard ISO/YYYY-MM-DD format handling at DB level. 
       // If CustomerDate is a string field, ensure your data formatting is uniform.
       AND.push({
@@ -1205,6 +1205,31 @@ export const getCustomer = async (req, res, next) => {
           lte: EndDate
         }
       });
+    } */
+    // Fix B: Date range. CustomerDate is stored as DD-MM-YYYY text, so a text
+    // range (gte/lte) cannot work. List every day in the range instead.
+    if (StartDate && EndDate) {
+      const toDate = (str) => {
+        const p = String(str).trim().split(/[ T]/)[0].replace(/\//g, "-").split("-").map(Number);
+        if (p.length !== 3 || p.some(Number.isNaN)) return null;
+        const [y, m, d] = p[0] > 31 ? p : [p[2], p[1], p[0]]; // accepts YYYY-MM-DD or DD-MM-YYYY
+        const dt = new Date(Date.UTC(y, m - 1, d));
+        return Number.isNaN(dt.getTime()) ? null : dt;
+      };
+      const from = toDate(StartDate);
+      const to = toDate(EndDate);
+
+      if (from && to && from <= to && (to - from) / 86400000 <= 3660) {
+        const pad = (n) => String(n).padStart(2, "0");
+        const days = [];
+        for (let t = new Date(from); t <= to; t.setUTCDate(t.getUTCDate() + 1)) {
+          const dd = pad(t.getUTCDate());
+          const mm = pad(t.getUTCMonth() + 1);
+          const yyyy = t.getUTCFullYear();
+          days.push(`${dd}-${mm}-${yyyy}`, `${dd}/${mm}/${yyyy}`, `${dd}${mm}${yyyy}`);
+        }
+        AND.push({ CustomerDate: { in: days } });
+      }
     }
 
     // --------------------------------------------

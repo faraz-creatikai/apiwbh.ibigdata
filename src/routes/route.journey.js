@@ -16,6 +16,7 @@ import {
   listEnrollments,
   getEnrollment,
   cancelEnrollment,
+  runJourneyForEnrolled,
 } from "../controllers/controller.journey.js";
 import { runJourneyWorker } from "../jobs/journey/journeyWorker.js";
 
@@ -48,5 +49,6 @@ journeyRoute.post("/:id/enroll", enrollCustomers);
 journeyRoute.get("/:id/enrollments", listEnrollments);
 journeyRoute.get("/:id/enrollments/:enrollmentId", getEnrollment);
 journeyRoute.patch("/:id/enrollments/:enrollmentId", cancelEnrollment);
+journeyRoute.post("/:id/run", runJourneyForEnrolled);
 
 export default journeyRoute;

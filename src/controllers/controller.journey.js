@@ -794,6 +794,112 @@ export const cancelEnrollment = handle(async (req, res) => {
     });
 });
 
+// Run the journey again for every enrolled contact.
+export const runJourneyForEnrolled = handle(async (req, res) => {
+    const journey = await findJourney(req.params.id, req.admin, {
+        select: {
+            id: true,
+            status: true,
+            nodes: {
+                where: { type: { in: ["trigger", "enrolled_leads"] } },
+                select: { id: true, type: true },
+            },
+        },
+    });
+
+    if (journey.status !== "active") {
+        throw new ApiError(400, "Only active journeys can be run.");
+    }
+    if (journey.nodes.length === 0) {
+        throw new ApiError(400, "Journey does not have a start node.");
+    }
+
+    const enrollments = await prisma.journeyEnrollment.findMany({
+        where: {
+            journeyId: journey.id,
+            status: { not: "cancelled" },
+            customer: await getCustomerAccessFilter(req.admin),
+        },
+        include: { customer: true },
+    });
+    if (enrollments.length === 0) {
+        throw new ApiError(400, "No enrolled contacts to run.");
+    }
+
+    // Stop old queued runs of this journey so contacts don't get messages twice.
+    await prisma.journeyExecution.updateMany({
+        where: { journeyId: journey.id, status: "queued", isTest: false },
+        data: { status: "cancelled", completedAt: new Date() },
+    });
+
+    const executionIds = [];
+
+    for (const enrollment of enrollments) {
+        const preferred = enrollment.source === "manual" ? "enrolled_leads" : "trigger";
+        const start = journey.nodes.find((n) => n.type === preferred) ?? journey.nodes[0];
+
+        const execution = await prisma.journeyExecution.create({
+            data: {
+                journeyId: journey.id,
+                customerId: enrollment.customerId,
+                status: "queued",
+                isTest: false,
+                currentNodeId: start.id,
+                triggerData: buildTriggerData(enrollment.customer, enrollment.id),
+                logs: {
+                    create: {
+                        nodeId: start.id,
+                        level: "info",
+                        message: "Journey run again for enrolled contact.",
+                        metadata: { enrollmentId: enrollment.id },
+                    },
+                },
+            },
+        });
+
+        await prisma.journeyEnrollment.update({
+            where: { id: enrollment.id },
+            data: {
+                executionId: execution.id,
+                status: "active",
+                completedAt: null,
+                exitedAt: null,
+            },
+        });
+
+        executionIds.push(execution.id);
+    }
+
+    res.json({
+        success: true,
+        message: `Journey started for ${executionIds.length} contacts.`,
+        data: { queued: executionIds.length },
+    });
+
+    // Run them in the background, one by one, after the response is sent.
+    (async () => {
+        for (const id of executionIds) {
+            const lockedAt = new Date();
+            const claim = await prisma.journeyExecution.updateMany({
+                where: { id, status: "queued" },
+                data: { status: "running", lockedAt, startedAt: lockedAt },
+            });
+            if (claim.count === 0) continue;
+
+            try {
+                await processJourneyExecution(id, "live");
+            } catch (error) {
+                console.error(`Journey execution failed: ${id}`, error);
+            } finally {
+                await prisma.journeyExecution.updateMany({
+                    where: { id },
+                    data: { lockedAt: null },
+                });
+            }
+        }
+    })();
+});
+
 // ─────────────────────────────────────────────────────────────
 // Analytics
 // ─────────────────────────────────────────────────────────────
