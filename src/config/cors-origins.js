@@ -7,6 +7,7 @@ export const ALLOWED_ORIGINS = [
   "https://propertybulk.ibigdata.in",
   "https://edu.ibigdata.in",
   "https://wbh.ibigdata.in",
+  "https://domain.ibigdata.in",
   "https://matri.ibigdata.in",
   "https://airbnb.ibigdata.in",
   "https://travel.ibigdata.in",
