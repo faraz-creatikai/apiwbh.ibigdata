@@ -1,6 +1,7 @@
 import prisma from "../config/prismaClient.js";
 import ApiError from "../utils/ApiError.js";
 import { toWaNumber } from "../utils/phone.js";
+import { uploadMetaSampleToMediaId } from "./controller.whatsappMeta.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 
@@ -119,19 +120,43 @@ export const startCampaign = async (req, res, next) => {
         const headerDef = metaTemplate.components?.find((c) => c.type === "HEADER");
         const bodyDef = metaTemplate.components?.find((c) => c.type === "BODY");
 
-        // Media header (image / video / document) needs a public link
+        // Media header (image / video / document)
         let headerComponent = null;
-        if (headerDef && headerDef.format !== "TEXT") {
+        if (headerDef && headerDef.format && headerDef.format.toUpperCase() !== "TEXT") {
             const fmt = headerDef.format.toLowerCase(); // image | video | document
-            const link = isMetaOnly ? campaign.headerMediaUrl : firstMediaUrl(template.whatsappImage);
-            if (!link) {
+            const fileName = template?.whatsappFileName || "Document";
+            const publicLink = isMetaOnly ? campaign.headerMediaUrl : firstMediaUrl(template.whatsappImage);
+
+            let mediaObj = null;
+
+            if (publicLink) {
+                mediaObj = { link: publicLink };
+            } else if (isMetaOnly) {
+                const sampleUrl = headerDef.example?.header_handle?.[0];
+                if (!sampleUrl || !sampleUrl.startsWith("http")) {
+                    return next(
+                        new ApiError(400, `This template needs a ${fmt} header, and no sample media was returned by Meta.`)
+                    );
+                }
+                try {
+                    const mediaId = await uploadMetaSampleToMediaId(sampleUrl, fmt, config, fileName);
+                    mediaObj = { id: mediaId };
+                } catch (mediaErr) {
+                    return next(new ApiError(400, mediaErr.message));
+                }
+            } else {
                 return next(new ApiError(400, `This template needs a ${fmt} header, but no file link is set for it.`));
             }
+
+            if (fmt === "document") {
+                mediaObj.filename = fileName;
+            }
+
             headerComponent = {
                 type: "header", // Meta send API expects lowercase
                 parameters: [{
                     type: fmt,
-                    [fmt]: { link, ...(fmt === "document" ? { filename: template?.whatsappFileName || "Document" } : {}) }
+                    [fmt]: mediaObj
                 }]
             };
         }
@@ -159,7 +184,7 @@ export const startCampaign = async (req, res, next) => {
             where: { id: campaignId },
             data: { status: "COMPLETED" }
         });
-        // res.status(200).json({ success: true, message: "Campaign started.", sessionId: session.id });
+
         const debug = [];
 
         // ==========================================
@@ -233,7 +258,7 @@ export const startCampaign = async (req, res, next) => {
                             status: "sent",
                             isRead: true,
                             source: "meta",
-                            campaignSessionId: session.id, // 🛑 Links message to Insights Dashboard
+                            campaignSessionId: session.id, // Links message to Insights Dashboard
                             timestamp: new Date()
                         }
                     });

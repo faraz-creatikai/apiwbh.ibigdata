@@ -762,7 +762,7 @@ const DEFAULT_MIME = {
     document: "application/pdf",
 };
 
-const uploadMetaSampleToMediaId = async (sampleUrl, fmt, config, fileName = "file") => {
+export const uploadMetaSampleToMediaId = async (sampleUrl, fmt, config, fileName = "file") => {
     const dlRes = await fetch(sampleUrl);
     if (!dlRes.ok) {
         throw new Error(`Could not fetch Meta sample ${fmt} (HTTP ${dlRes.status}).`);
