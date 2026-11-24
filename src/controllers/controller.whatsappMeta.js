@@ -166,6 +166,12 @@ export const receiveWhatsAppMessage = async (req, res) => {
                 const waId = statusObj.id;
                 const status = statusObj.status;
 
+                console.log("📩 [META STATUS]", {
+                    to: statusObj.recipient_id,
+                    status,
+                    errors: statusObj.errors || null
+                });
+
                 const existingMsg = await prisma.whatsAppMessage.findUnique({
                     where: { adminId_waId: { adminId, waId } }
                 });
