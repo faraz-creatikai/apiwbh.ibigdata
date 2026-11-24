@@ -727,7 +727,7 @@ model WhatsAppCampaign {
 
   // Meta-only templates (approved in Meta, no CRM record). Nullable, so Baileys is untouched.
   metaTemplateName String?
-  headerMediaUrl   String?
+  headerMediaUrl   String? @db.Text
 
   targetIds   Json      @default("[]")
   scheduledAt DateTime?
