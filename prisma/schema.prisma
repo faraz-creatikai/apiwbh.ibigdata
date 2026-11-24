@@ -720,16 +720,19 @@ model WhatsAppMessage {
 
 model WhatsAppCampaign {
   id         String @id @default(uuid())
-  adminId    String // Links to the Admin who created it
+  adminId    String
   name       String
-  templateId String // References the local CRM Template ID
-  status     String @default("DRAFT") // DRAFT, ACTIVE, COMPLETED
+  templateId String // CRM Template id (or "meta:<name>" for Meta-only templates)
+  status     String @default("DRAFT")
 
-  targetIds   Json      @default("[]") // Array of selected Customer IDs
+  // Meta-only templates (approved in Meta, no CRM record). Nullable, so Baileys is untouched.
+  metaTemplateName String?
+  headerMediaUrl   String?
+
+  targetIds   Json      @default("[]")
   scheduledAt DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   sessions WhatsAppCampaignSession[]
 }
