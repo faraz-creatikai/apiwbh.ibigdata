@@ -125,14 +125,20 @@ export const startCampaign = async (req, res, next) => {
         if (headerDef && headerDef.format && headerDef.format.toUpperCase() !== "TEXT") {
             const fmt = headerDef.format.toLowerCase(); // image | video | document
             const fileName = template?.whatsappFileName || "Document";
-            const publicLink = isMetaOnly ? campaign.headerMediaUrl : firstMediaUrl(template.whatsappImage);
+
+
+            const rawLink = isMetaOnly ? campaign.headerMediaUrl : firstMediaUrl(template.whatsappImage);
+            const publicLink = rawLink && !isMetaPreviewUrl(rawLink) ? rawLink : null;
 
             let mediaObj = null;
 
             if (publicLink) {
                 mediaObj = { link: publicLink };
             } else if (isMetaOnly) {
-                const sampleUrl = headerDef.example?.header_handle?.[0];
+                const sampleUrl =
+                    (rawLink && isMetaPreviewUrl(rawLink) ? rawLink : null) ||
+                    headerDef.example?.header_handle?.[0];
+
                 if (!sampleUrl || !sampleUrl.startsWith("http")) {
                     return next(
                         new ApiError(400, `This template needs a ${fmt} header, and no sample media was returned by Meta.`)
