@@ -78,6 +78,13 @@ export const getCampaigns = async (req, res, next) => {
 // ==========================================
 // 3. START CAMPAIGN (EXECUTE SESSION)
 // ==========================================
+const isMetaPreviewUrl = (url) =>
+    typeof url === "string" &&
+    /https?:\/\/[^/]*(scontent|whatsapp\.net|fbcdn\.net|fbsbx\.com)/i.test(url);
+
+// ==========================================
+// 3. START CAMPAIGN (EXECUTE SESSION)
+// ==========================================
 export const startCampaign = async (req, res, next) => {
     try {
         const adminId = req.admin.id;
@@ -125,8 +132,6 @@ export const startCampaign = async (req, res, next) => {
         if (headerDef && headerDef.format && headerDef.format.toUpperCase() !== "TEXT") {
             const fmt = headerDef.format.toLowerCase(); // image | video | document
             const fileName = template?.whatsappFileName || "Document";
-
-
             const rawLink = isMetaOnly ? campaign.headerMediaUrl : firstMediaUrl(template.whatsappImage);
             const publicLink = rawLink && !isMetaPreviewUrl(rawLink) ? rawLink : null;
 
