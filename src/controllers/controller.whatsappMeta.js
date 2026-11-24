@@ -134,6 +134,8 @@ export const receiveWhatsAppMessage = async (req, res) => {
     // 1. ALWAYS return 200 OK immediately
     res.sendStatus(200);
 
+    console.log("🔔 [META WEBHOOK HIT]", JSON.stringify(req.body));
+
     try {
         const body = req.body;
 
