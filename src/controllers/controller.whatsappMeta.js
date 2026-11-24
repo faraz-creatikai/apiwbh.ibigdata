@@ -782,7 +782,7 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
             return next(new ApiError(400, "Template is required."));
         }
 
-        // 1. DYNAMICALLY FETCH EXACT LANGUAGE CODE FROM META
+        // 1. DYNAMICALLY FETCH EXACT LANGUAGE CODE & DEFINITION FROM META
         const templatesRes = await fetch(
             `https://graph.facebook.com/v21.0/${config.wabaId}/message_templates?name=${encodeURIComponent(metaTemplateName)}&access_token=${config.accessToken}`
         );
@@ -835,7 +835,8 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
 
         // Pre-compute template media & body variable count once outside the loop
         const mediaUrl = crmTemplate ? getFirstMediaUrl(crmTemplate.whatsappImage) : null;
-        const varMatches = crmTemplate?.body ? crmTemplate.body.match(/\{\{[^}]+\}\}/g) : null;
+        const bodyDef = metaTempObj.components?.find((c) => c.type === "BODY");
+        const varMatches = (bodyDef?.text || crmTemplate?.body || "").match(/\{\{[^}]+\}\}/g) || [];
 
         let sentCount = 0;
         const errors = [];
@@ -856,16 +857,16 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
                         parameters: [{ type: "document", document: { link: mediaUrl, filename: fileName } }]
                     });
                 }
+            }
 
-                if (varMatches && varMatches.length > 0) {
-                    components.push({
-                        type: "body",
-                        parameters: varMatches.map((_, index) => ({
-                            type: "text",
-                            text: index === 0 ? (target.name || "Customer") : "Details"
-                        }))
-                    });
-                }
+            if (varMatches.length > 0) {
+                components.push({
+                    type: "body",
+                    parameters: varMatches.map((_, index) => ({
+                        type: "text",
+                        text: index === 0 ? (target.name || "Customer") : "Details"
+                    }))
+                });
             }
 
             const payload = {
