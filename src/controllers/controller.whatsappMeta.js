@@ -762,7 +762,7 @@ export const verifyMetaTemplate = async (req, res, next) => {
 export const sendMetaTemplateMessage = async (req, res, next) => {
     try {
         const adminId = req.admin.id;
-        const { toPhone, targetIds, templateId, templateName } = req.body;
+        const { toPhone, targetIds, templateId, templateName, headerMediaUrl } = req.body;
 
         const config = await prisma.whatsAppMetaConfig.findUnique({ where: { adminId } });
         if (!config || config.activeProvider !== "meta") {
@@ -782,7 +782,7 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
             return next(new ApiError(400, "Template is required."));
         }
 
-        // 1. DYNAMICALLY FETCH EXACT LANGUAGE CODE & DEFINITION FROM META
+        // 1. Fetch approved template definition from Meta
         const templatesRes = await fetch(
             `https://graph.facebook.com/v21.0/${config.wabaId}/message_templates?name=${encodeURIComponent(metaTemplateName)}&access_token=${config.accessToken}`
         );
@@ -799,8 +799,64 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
         }
 
         const exactLanguageCode = metaTempObj.language || "en_US";
+        const headerDef = metaTempObj.components?.find((c) => c.type === "HEADER");
+        const bodyDef = metaTempObj.components?.find((c) => c.type === "BODY");
 
-        // 2. Build unique recipient list (supports single toPhone and/or bulk targetIds)
+        // 2. Validate & pre-build HEADER component from Meta's definition
+        let staticHeaderComponent = null;
+        let headerTextVars = [];
+
+        if (headerDef) {
+            const fmt = (headerDef.format || "TEXT").toUpperCase();
+
+            if (["IMAGE", "VIDEO", "DOCUMENT"].includes(fmt)) {
+                const lowerFmt = fmt.toLowerCase();
+                const exampleUrl = headerDef.example?.header_handle?.[0];
+                const link =
+                    headerMediaUrl ||
+                    (crmTemplate ? getFirstMediaUrl(crmTemplate.whatsappImage) : null) ||
+                    (typeof exampleUrl === "string" && exampleUrl.startsWith("http") ? exampleUrl : null);
+
+                if (!link) {
+                    return next(
+                        new ApiError(400, `This template requires a ${lowerFmt} header URL, but none is set.`)
+                    );
+                }
+
+                staticHeaderComponent = {
+                    type: "header",
+                    parameters: [
+                        {
+                            type: lowerFmt,
+                            [lowerFmt]: {
+                                link,
+                                ...(lowerFmt === "document"
+                                    ? { filename: crmTemplate?.whatsappFileName || "Document" }
+                                    : {})
+                            }
+                        }
+                    ]
+                };
+            } else if (fmt === "TEXT" && headerDef.text) {
+                headerTextVars = headerDef.text.match(/\{\{[^}]+\}\}/g) || [];
+            }
+        }
+
+        const bodyVars = (bodyDef?.text || "").match(/\{\{[^}]+\}\}/g) || [];
+        const isNamedParams = metaTempObj.parameter_format === "NAMED";
+
+        const buildTextParam = (token, index, customerName) => {
+            const param = {
+                type: "text",
+                text: index === 0 ? (customerName || "Customer") : "Details"
+            };
+            if (isNamedParams) {
+                param.parameter_name = token.replace(/^\{\{|\}\}$/g, "").trim();
+            }
+            return param;
+        };
+
+        // 3. Build unique recipient list (supports single toPhone and/or bulk targetIds)
         const targetMap = new Map();
 
         if (Array.isArray(targetIds) && targetIds.length > 0) {
@@ -833,39 +889,26 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
             return next(new ApiError(400, "No valid phone numbers provided."));
         }
 
-        // Pre-compute template media & body variable count once outside the loop
-        const mediaUrl = crmTemplate ? getFirstMediaUrl(crmTemplate.whatsappImage) : null;
-        const bodyDef = metaTempObj.components?.find((c) => c.type === "BODY");
-        const varMatches = (bodyDef?.text || crmTemplate?.body || "").match(/\{\{[^}]+\}\}/g) || [];
-
+        // 4. Send to each recipient
         let sentCount = 0;
         const errors = [];
 
         for (const target of targets) {
             const components = [];
 
-            if (crmTemplate) {
-                if (crmTemplate.whatsappMediaType === "image" && mediaUrl) {
-                    components.push({
-                        type: "header",
-                        parameters: [{ type: "image", image: { link: mediaUrl } }]
-                    });
-                } else if (crmTemplate.whatsappMediaType === "document" && mediaUrl) {
-                    const fileName = crmTemplate.whatsappFileName || "Document";
-                    components.push({
-                        type: "header",
-                        parameters: [{ type: "document", document: { link: mediaUrl, filename: fileName } }]
-                    });
-                }
+            if (staticHeaderComponent) {
+                components.push(staticHeaderComponent);
+            } else if (headerTextVars.length > 0) {
+                components.push({
+                    type: "header",
+                    parameters: headerTextVars.map((tok, i) => buildTextParam(tok, i, target.name))
+                });
             }
 
-            if (varMatches.length > 0) {
+            if (bodyVars.length > 0) {
                 components.push({
                     type: "body",
-                    parameters: varMatches.map((_, index) => ({
-                        type: "text",
-                        text: index === 0 ? (target.name || "Customer") : "Details"
-                    }))
+                    parameters: bodyVars.map((tok, i) => buildTextParam(tok, i, target.name))
                 });
             }
 
