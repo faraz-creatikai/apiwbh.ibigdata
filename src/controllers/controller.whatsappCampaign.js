@@ -1,5 +1,6 @@
 import prisma from "../config/prismaClient.js";
 import ApiError from "../utils/ApiError.js";
+import { toWaNumber } from "../utils/phone.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 
@@ -140,7 +141,7 @@ export const startCampaign = async (req, res, next) => {
         // Fetch valid customers
         const customers = await prisma.customer.findMany({
             where: { id: { in: targetIds } },
-            select: { id: true, ContactNumber: true, customerName: true }
+            select: { id: true, ContactNumber: true, CountryCode: true, customerName: true }
         });
 
         // Create the Analytics Tracking Session
@@ -165,7 +166,7 @@ export const startCampaign = async (req, res, next) => {
         // BACKGROUND PROCESSING: Send Templates
         // ==========================================
         for (const customer of customers) {
-            const cleanPhone = customer.ContactNumber.replace(/\D/g, "");
+            const cleanPhone = toWaNumber(customer.ContactNumber, customer.CountryCode);
             if (!cleanPhone) continue;
 
             try {
