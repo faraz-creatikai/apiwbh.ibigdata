@@ -159,15 +159,23 @@ export const startCampaign = async (req, res, next) => {
             where: { id: campaignId },
             data: { status: "COMPLETED" }
         });
-
-        res.status(200).json({ success: true, message: "Campaign started.", sessionId: session.id });
+        // res.status(200).json({ success: true, message: "Campaign started.", sessionId: session.id });
+        const debug = [];
 
         // ==========================================
         // BACKGROUND PROCESSING: Send Templates
         // ==========================================
         for (const customer of customers) {
             const cleanPhone = toWaNumber(customer.ContactNumber, customer.CountryCode);
-            if (!cleanPhone) continue;
+            if (!cleanPhone) {
+                debug.push({
+                    customerId: customer.id,
+                    skipped: "empty phone",
+                    raw: customer.ContactNumber,
+                    cc: customer.CountryCode
+                });
+                continue;
+            }
 
             try {
                 const components = [];
@@ -205,6 +213,7 @@ export const startCampaign = async (req, res, next) => {
                 );
 
                 const metaData = await metaRes.json();
+                debug.push({ cleanPhone, status: metaRes.status, metaData });
 
                 if (metaData.error) {
                     console.error(`❌ [CAMPAIGN SEND ERROR] ${cleanPhone}:`, metaData.error.message);
@@ -234,6 +243,7 @@ export const startCampaign = async (req, res, next) => {
                     });
                 }
             } catch (err) {
+                debug.push({ cleanPhone, crash: err.message });
                 console.error("Bulk Send Error for", cleanPhone, err.message);
             }
         }
@@ -242,6 +252,18 @@ export const startCampaign = async (req, res, next) => {
         await prisma.whatsAppCampaignSession.update({
             where: { id: session.id },
             data: { status: "COMPLETED", completedAt: new Date() }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: "Campaign finished (debug mode).",
+            sessionId: session.id,
+            targetIdsCount: targetIds.length,
+            customersFound: customers.length,
+            metaTemplateName,
+            languageCode,
+            bodyVarCount,
+            debug
         });
 
     } catch (err) {
