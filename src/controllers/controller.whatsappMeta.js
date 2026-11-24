@@ -867,3 +867,76 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
     }
 };
 
+
+
+
+
+
+
+
+//admin connect
+
+// ==========================================
+// 1b. CONNECT ADMIN'S OWN WABA (manual credentials, no Embedded Signup)
+// ==========================================
+export const connectMetaWhatsappAdmin = async (req, res, next) => {
+    try {
+        const adminId = req.admin.id;
+        const { wabaId, phoneNumberId, accessToken } = req.body;
+
+        if (!wabaId || !phoneNumberId || !accessToken) {
+            return next(new ApiError(400, "wabaId, phoneNumberId and accessToken are required"));
+        }
+
+        // Optional allow-list: META_MANUAL_CONNECT_ADMIN_IDS=1,2,3 (leave unset to allow any logged-in admin)
+        const allowed = (process.env.META_MANUAL_CONNECT_ADMIN_IDS || "")
+            .split(",").map((s) => s.trim()).filter(Boolean);
+        if (allowed.length && !allowed.includes(String(adminId))) {
+            return next(new ApiError(403, "You are not allowed to use manual WhatsApp connection"));
+        }
+
+        const headers = { Authorization: `Bearer ${accessToken}` };
+        const GRAPH = "https://graph.facebook.com/v21.0";
+
+        // 1. Validate the token + phone number
+        const phoneRes = await fetch(`${GRAPH}/${phoneNumberId}?fields=verified_name,display_phone_number,quality_rating`, { headers });
+        const phoneData = await phoneRes.json();
+        if (phoneData.error) {
+            return next(new ApiError(400, `Meta rejected the credentials: ${phoneData.error.message}`));
+        }
+
+        // 2. Make sure this phone number really belongs to the given WABA
+        const listRes = await fetch(`${GRAPH}/${wabaId}/phone_numbers?fields=id&limit=50`, { headers });
+        const listData = await listRes.json();
+        if (listData.error) {
+            return next(new ApiError(400, `Could not read WABA: ${listData.error.message}`));
+        }
+        if (!(listData.data || []).some((p) => p.id === String(phoneNumberId))) {
+            return next(new ApiError(400, "This phone number does not belong to the given WABA"));
+        }
+
+        // 3. Subscribe the app to the WABA so webhooks (messages/statuses) arrive
+        const subRes = await fetch(`${GRAPH}/${wabaId}/subscribed_apps`, { method: "POST", headers });
+        const subData = await subRes.json();
+        if (!subData.success) {
+            console.warn(`⚠️ [${adminId}] subscribed_apps failed:`, subData);
+        }
+
+        // 4. Save, same shape as the Embedded Signup flow
+        const config = await prisma.whatsAppMetaConfig.upsert({
+            where: { adminId },
+            update: { wabaId, phoneNumberId, accessToken, activeProvider: "meta" },
+            create: { adminId, wabaId, phoneNumberId, accessToken, activeProvider: "meta" },
+        });
+
+        res.status(200).json({
+            success: true,
+            message: `Connected ${phoneData.display_phone_number} (${phoneData.verified_name})`,
+            webhookSubscribed: !!subData.success,
+            config: { ...config, accessToken: undefined }, // never echo the token back
+        });
+    } catch (err) {
+        console.error("❌ Meta WhatsApp Admin Connect Error:", err.message);
+        next(new ApiError(500, "Failed to connect admin WhatsApp account"));
+    }
+};
