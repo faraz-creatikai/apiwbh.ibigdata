@@ -811,17 +811,17 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
 
             if (["IMAGE", "VIDEO", "DOCUMENT"].includes(fmt)) {
                 const lowerFmt = fmt.toLowerCase();
-                const exampleUrl = headerDef.example?.header_handle?.[0];
                 const link =
                     headerMediaUrl ||
-                    (crmTemplate ? getFirstMediaUrl(crmTemplate.whatsappImage) : null) ||
-                    (typeof exampleUrl === "string" && exampleUrl.startsWith("http") ? exampleUrl : null);
+                    (crmTemplate ? getFirstMediaUrl(crmTemplate.whatsappImage) : null);
 
                 if (!link) {
                     return next(
-                        new ApiError(400, `This template requires a ${lowerFmt} header URL, but none is set.`)
+                        new ApiError(400, `This template requires a public ${lowerFmt} URL (headerMediaUrl).`)
                     );
                 }
+
+
 
                 staticHeaderComponent = {
                     type: "header",
