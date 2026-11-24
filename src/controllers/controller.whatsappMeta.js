@@ -210,7 +210,21 @@ export const receiveWhatsAppMessage = async (req, res) => {
                 const phoneKey = fromPhone.slice(-10);
                 const type = msg.type;
 
-                // ... (Keep your existing messageBody and mediaUrl extraction logic here) ...
+                let messageBody = "";
+                let mediaUrl = null;
+
+                if (type === "text") {
+                    messageBody = msg.text?.body || "";
+                } else if (type === "button") {
+                    messageBody = msg.button?.text || "";
+                } else if (type === "interactive") {
+                    messageBody = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "";
+                } else if (["image", "video", "audio", "document", "sticker"].includes(type)) {
+                    messageBody = msg[type]?.caption || `[${type}]`;
+                    mediaUrl = msg[type]?.id || null;
+                } else {
+                    messageBody = `[${type}]`;
+                }
 
                 const exists = await prisma.whatsAppMessage.findUnique({
                     where: { adminId_waId: { adminId, waId } }
@@ -742,9 +756,9 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
             `https://graph.facebook.com/v21.0/${config.wabaId}/message_templates?name=${metaTemplateName}&access_token=${config.accessToken}`
         );
         const templatesData = await templatesRes.json();
-        
+
         const metaTempObj = templatesData.data?.find(t => t.name === metaTemplateName && t.status === 'APPROVED');
-        
+
         if (!metaTempObj) {
             return next(new ApiError(400, `Template '${metaTemplateName}' is not approved by Meta yet or does not exist.`));
         }
@@ -754,7 +768,7 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
         // 2. Map targets to objects to keep track of names for {{1}} variables
         let targets = [];
         if (toPhone) {
-            targets.push({ phone: toPhone.replace(/\D/g, ""), name: "Customer" }); 
+            targets.push({ phone: toPhone.replace(/\D/g, ""), name: "Customer" });
         }
         if (targetIds && targetIds.length > 0) {
             const customers = await prisma.customer.findMany({
@@ -762,9 +776,9 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
                 select: { ContactNumber: true, customerName: true }
             });
             customers.forEach(c => {
-                targets.push({ 
-                    phone: c.ContactNumber.replace(/\D/g, ""), 
-                    name: c.customerName || "Customer" 
+                targets.push({
+                    phone: c.ContactNumber.replace(/\D/g, ""),
+                    name: c.customerName || "Customer"
                 });
             });
         }
@@ -775,16 +789,16 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
         let errors = [];
 
         for (const target of targets) {
-            
+
             // 3. Construct components for Meta Payload
             const components = [];
-            
+
             if (crmTemplate) {
                 // 🛑 META SEND REQUIRES LOWERCASE "header" and "body"
                 const mediaUrl = getFirstMediaUrl(crmTemplate.whatsappImage);
                 if (crmTemplate.whatsappMediaType === "image" && mediaUrl) {
                     components.push({
-                        type: "header", 
+                        type: "header",
                         parameters: [{ type: "image", image: { link: mediaUrl } }]
                     });
                 } else if (crmTemplate.whatsappMediaType === "document" && mediaUrl) {
@@ -801,11 +815,11 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
                     const parameters = varMatches.map((match, index) => {
                         // Fill {{1}} with Name, and fallback string for any additional {{2}}, {{3}} variables
                         if (index === 0) return { type: "text", text: target.name || "Customer" };
-                        return { type: "text", text: "Details" }; 
+                        return { type: "text", text: "Details" };
                     });
-                    
+
                     components.push({
-                        type: "body", 
+                        type: "body",
                         parameters
                     });
                 }
@@ -864,8 +878,8 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
             }
         }
 
-        res.status(200).json({ 
-            success: sentCount > 0, 
+        res.status(200).json({
+            success: sentCount > 0,
             message: `Template sent to ${sentCount} recipients.`,
             errors: errors.length > 0 ? errors : undefined
         });
