@@ -15,6 +15,7 @@ export const ALLOWED_ORIGINS = [
   "https://app.makemyleads.com",
   "https://app.estateai.in",
   "https://estateai.in",
+  "https://autoflow-dj.vercel.app"
 ];
 
 export const clientUrl = "https://wbh.ibigdata.in";
