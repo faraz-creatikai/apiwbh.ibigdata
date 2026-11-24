@@ -756,6 +756,43 @@ export const verifyMetaTemplate = async (req, res, next) => {
 
 
 
+const DEFAULT_MIME = {
+    image: "image/jpeg",
+    video: "video/mp4",
+    document: "application/pdf",
+};
+
+const uploadMetaSampleToMediaId = async (sampleUrl, fmt, config, fileName = "file") => {
+    const dlRes = await fetch(sampleUrl);
+    if (!dlRes.ok) {
+        throw new Error(`Could not fetch Meta sample ${fmt} (HTTP ${dlRes.status}).`);
+    }
+
+    const mimeType = dlRes.headers.get("content-type")?.split(";")[0]?.trim() || DEFAULT_MIME[fmt] || "application/octet-stream";
+    const buffer = await dlRes.arrayBuffer();
+
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", mimeType);
+    form.append("file", new Blob([buffer], { type: mimeType }), fileName);
+
+    const upRes = await fetch(`https://graph.facebook.com/v21.0/${config.phoneNumberId}/media`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.accessToken}` },
+        body: form,
+    });
+    const upData = await upRes.json();
+
+    if (upData.error || !upData.id) {
+        throw new Error(upData.error?.message || "Failed to upload template media to Meta.");
+    }
+
+    return upData.id;
+};
+
+
+
+
 // ==========================================
 // SEND META TEMPLATE MESSAGE (Direct/Quick Send)
 // ==========================================
@@ -811,29 +848,40 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
 
             if (["IMAGE", "VIDEO", "DOCUMENT"].includes(fmt)) {
                 const lowerFmt = fmt.toLowerCase();
-                const link =
+                const publicLink =
                     headerMediaUrl ||
                     (crmTemplate ? getFirstMediaUrl(crmTemplate.whatsappImage) : null);
+                const fileName = crmTemplate?.whatsappFileName || "Document";
 
-                if (!link) {
-                    return next(
-                        new ApiError(400, `This template requires a public ${lowerFmt} URL (headerMediaUrl).`)
-                    );
+                let mediaObj = null;
+
+                if (publicLink) {
+                    mediaObj = { link: publicLink };
+                } else {
+                    const sampleUrl = headerDef.example?.header_handle?.[0];
+                    if (!sampleUrl || !sampleUrl.startsWith("http")) {
+                        return next(
+                            new ApiError(400, `This template requires a ${lowerFmt} header, and no sample media was returned by Meta.`)
+                        );
+                    }
+                    try {
+                        const mediaId = await uploadMetaSampleToMediaId(sampleUrl, lowerFmt, config, fileName);
+                        mediaObj = { id: mediaId };
+                    } catch (mediaErr) {
+                        return next(new ApiError(400, mediaErr.message));
+                    }
                 }
 
-
+                if (lowerFmt === "document") {
+                    mediaObj.filename = fileName;
+                }
 
                 staticHeaderComponent = {
                     type: "header",
                     parameters: [
                         {
                             type: lowerFmt,
-                            [lowerFmt]: {
-                                link,
-                                ...(lowerFmt === "document"
-                                    ? { filename: crmTemplate?.whatsappFileName || "Document" }
-                                    : {})
-                            }
+                            [lowerFmt]: mediaObj
                         }
                     ]
                 };
@@ -976,7 +1024,6 @@ export const sendMetaTemplateMessage = async (req, res, next) => {
         next(new ApiError(500, "Failed to send template."));
     }
 };
-
 
 
 
