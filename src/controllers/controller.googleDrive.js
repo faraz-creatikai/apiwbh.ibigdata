@@ -8,6 +8,7 @@ import { clientUrl } from "../config/cors-origins.js";
 
 import { Readable } from "stream";
 import { getCustomerAccessFilter } from "./controller.customer.js";
+import fs from "fs";
 
 
 const seesAll = (a) => a.isSuperAdmin || a.role === "administrator";
@@ -224,18 +225,30 @@ export const uploadCustomerDocument = async (req, res, next) => {
     const { drive } = await getDriveClientForAdmin(req.admin.id);
     const folderId = await getOrCreateCrmFolder(drive);
 
-    // Stream buffer directly to Google Drive (no local disk writes)
-    const driveRes = await drive.files.create({
-      requestBody: {
-        name: file.originalname,
-        parents: [folderId],
-      },
-      media: {
-        mimeType: file.mimetype,
-        body: Readable.from(file.buffer),
-      },
-      fields: "id, name, mimeType, size, webViewLink, webContentLink",
-    });
+    // Handle both memoryStorage (file.buffer) and diskStorage (file.path)
+    const fileStream = file.buffer
+      ? Readable.from(file.buffer)
+      : fs.createReadStream(file.path);
+
+    let driveRes;
+    try {
+      driveRes = await drive.files.create({
+        requestBody: {
+          name: file.originalname,
+          parents: [folderId],
+        },
+        media: {
+          mimeType: file.mimetype,
+          body: fileStream,
+        },
+        fields: "id, name, mimeType, size, webViewLink, webContentLink",
+      });
+    } finally {
+      // Remove local temp file if diskStorage was used
+      if (file.path && fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
+      }
+    }
 
     const uploaded = driveRes.data;
 

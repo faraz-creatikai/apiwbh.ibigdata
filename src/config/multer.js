@@ -80,5 +80,17 @@ const brandUpload = multer({
   },
 });
 
+
+const gdriveUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB max
+  fileFilter: (req, file, cb) => {
+    const allowed = /pdf|doc|docx|txt|csv|xls|xlsx|jpg|jpeg|png|webp/;
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.test(ext)) cb(null, true);
+    else cb(new Error("Unsupported file type for Knowledge Base."));
+  },
+});
+
 export default upload;
-export { templateUpload, voiceUpload, brandUpload };
+export { templateUpload, voiceUpload, brandUpload, gdriveUpload };
