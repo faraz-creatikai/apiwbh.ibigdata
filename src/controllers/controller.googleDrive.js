@@ -3,8 +3,14 @@ import { google } from "googleapis";
 import prisma from "../config/prismaClient.js";
 import ApiError from "../utils/ApiError.js";
 import { encryptKey, decryptKey } from "../utils/cryptoHelper.js";
-import { createOAuth2Client, GDRIVE_SCOPES } from "../utils/google/googleDriveClient.js";
+import { createOAuth2Client, GDRIVE_SCOPES, getDriveClientForAdmin } from "../utils/google/googleDriveClient.js";
 import { clientUrl } from "../config/cors-origins.js";
+
+import { Readable } from "stream";
+import { getCustomerAccessFilter } from "./controller.customer.js";
+
+
+const seesAll = (a) => a.isSuperAdmin || a.role === "administrator";
 
 const fail = (err, next) =>
   next(err instanceof ApiError ? err : new ApiError(500, err.message));
@@ -139,6 +145,196 @@ export const disconnectGDrive = async (req, res, next) => {
     });
 
     res.json({ success: true, message: "Google Drive disconnected" });
+  } catch (err) {
+    fail(err, next);
+  }
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// documents controller
+
+
+/**
+ * Helper: Finds or creates a dedicated "CRM_Documents" folder in the admin's Google Drive
+ * so uploaded customer files stay organized instead of cluttering their Drive root.
+ */
+async function getOrCreateCrmFolder(drive) {
+  const folderName = "CRM_Documents";
+  const listRes = await drive.files.list({
+    q: `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`,
+    fields: "files(id, name)",
+    spaces: "drive",
+  });
+
+  if (listRes.data.files?.length) {
+    return listRes.data.files[0].id;
+  }
+
+  const createRes = await drive.files.create({
+    requestBody: {
+      name: folderName,
+      mimeType: "application/vnd.google-apps.folder",
+    },
+    fields: "id",
+  });
+
+  return createRes.data.id;
+}
+
+// POST /api/gdrive/documents
+// Expects multipart/form-data with field "file" and body field "customerId"
+export const uploadCustomerDocument = async (req, res, next) => {
+  try {
+    const file = req.file;
+    const { customerId } = req.body;
+
+    if (!file) {
+      return next(new ApiError(400, "Please upload a file"));
+    }
+    if (!customerId) {
+      return next(new ApiError(400, "customerId is required"));
+    }
+
+    // Verify the customer exists and this admin has access to them
+    const access = await getCustomerAccessFilter(req.admin);
+    const customer = await prisma.customer.findFirst({
+      where: { AND: [access, { id: customerId }] },
+      select: { id: true, customerName: true },
+    });
+
+    if (!customer) {
+      return next(new ApiError(404, "Customer not found or access denied"));
+    }
+
+    // Get authenticated Google Drive client for the current admin
+    const { drive } = await getDriveClientForAdmin(req.admin.id);
+    const folderId = await getOrCreateCrmFolder(drive);
+
+    // Stream buffer directly to Google Drive (no local disk writes)
+    const driveRes = await drive.files.create({
+      requestBody: {
+        name: file.originalname,
+        parents: [folderId],
+      },
+      media: {
+        mimeType: file.mimetype,
+        body: Readable.from(file.buffer),
+      },
+      fields: "id, name, mimeType, size, webViewLink, webContentLink",
+    });
+
+    const uploaded = driveRes.data;
+
+    const doc = await prisma.customerDocument.create({
+      data: {
+        customerId: customer.id,
+        uploadedById: req.admin.id,
+        fileName: uploaded.name || file.originalname,
+        mimeType: uploaded.mimeType || file.mimetype,
+        fileSize: uploaded.size ? Number(uploaded.size) : file.size,
+        driveFileId: uploaded.id,
+        webViewLink: uploaded.webViewLink || null,
+        webContentLink: uploaded.webContentLink || null,
+        ragStatus: "PENDING",
+      },
+      include: {
+        customer: { select: { id: true, customerName: true, ContactNumber: true } },
+        uploadedBy: { select: { id: true, name: true } },
+      },
+    });
+
+    res.status(201).json({ success: true, data: doc });
+  } catch (err) {
+    fail(err, next);
+  }
+};
+
+// GET /api/gdrive/documents?customerId=&search=&page=&limit=
+export const getCustomerDocuments = async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const customerId = String(req.query.customerId || "").trim();
+    const search = String(req.query.search || "").trim();
+
+    const where = {
+      // Non-admins only see documents they uploaded or for customers they can access
+      ...(!seesAll(req.admin) && { uploadedById: req.admin.id }),
+      ...(customerId && { customerId }),
+      ...(search && {
+        OR: [
+          { fileName: { contains: search } },
+          { customer: { customerName: { contains: search } } },
+        ],
+      }),
+    };
+
+    const [total, data] = await Promise.all([
+      prisma.customerDocument.count({ where }),
+      prisma.customerDocument.findMany({
+        where,
+        include: {
+          customer: { select: { id: true, customerName: true, ContactNumber: true } },
+          uploadedBy: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      total,
+      currentPage: page,
+      totalPages: Math.ceil(total / limit),
+      data,
+    });
+  } catch (err) {
+    fail(err, next);
+  }
+};
+
+// DELETE /api/gdrive/documents/:id
+export const deleteCustomerDocument = async (req, res, next) => {
+  try {
+    const doc = await prisma.customerDocument.findFirst({
+      where: {
+        id: req.params.id,
+        ...(!seesAll(req.admin) && { uploadedById: req.admin.id }),
+      },
+    });
+
+    if (!doc) {
+      return next(new ApiError(404, "Document not found"));
+    }
+
+    // Best-effort delete from the Google Drive account that owns the file
+    try {
+      const { drive } = await getDriveClientForAdmin(doc.uploadedById);
+      await drive.files.delete({ fileId: doc.driveFileId });
+    } catch (driveErr) {
+      // If the file was already removed in Drive or token was revoked, still clean up DB
+      console.warn("[GDrive] Could not delete file from Drive:", driveErr.message);
+    }
+
+    await prisma.customerDocument.delete({ where: { id: doc.id } });
+
+    res.json({ success: true, message: "Document deleted" });
   } catch (err) {
     fail(err, next);
   }

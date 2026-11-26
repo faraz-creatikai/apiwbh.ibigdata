@@ -5,8 +5,12 @@ import {
   handleGDriveCallback,
   getGDriveStatus,
   disconnectGDrive,
+  uploadCustomerDocument,
+  getCustomerDocuments,
+  deleteCustomerDocument,
 } from "../controllers/controller.googleDrive.js";
 import { protectRoute } from "../middlewares/auth.js";
+import upload from "../config/multer.js";
 
 const gDriveRoutes = express.Router();
 
@@ -19,5 +23,11 @@ gDriveRoutes.use(protectRoute);
 gDriveRoutes.get("/auth-url", getGDriveAuthUrl);
 gDriveRoutes.get("/status", getGDriveStatus);
 gDriveRoutes.delete("/disconnect", disconnectGDrive);
+
+//documents routes
+
+gDriveRoutes.post("/documents", upload.single("file"), uploadCustomerDocument);
+gDriveRoutes.get("/documents", getCustomerDocuments);
+gDriveRoutes.delete("/documents/:id", deleteCustomerDocument);
 
 export default gDriveRoutes;

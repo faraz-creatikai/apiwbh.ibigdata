@@ -92,6 +92,8 @@ model Admin {
   // Google Drive Integration
   gDriveCredential GoogleDriveCredential?
 
+  uploadedDocuments CustomerDocument[] @relation("AdminUploadedDocuments")
+
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   scheduledPosts ScheduledPost[]
@@ -120,6 +122,19 @@ enum AIProvider {
   MISTRAL
   GROQ
   CUSTOM
+}
+
+enum GDriveStatus {
+  CONNECTED
+  DISCONNECTED
+  REVOKED
+}
+
+enum RagStatus {
+  PENDING
+  PROCESSING
+  INDEXED
+  FAILED
 }
 
 enum JourneyStatus {
@@ -1192,6 +1207,8 @@ model Customer {
   executions  JourneyExecution[]
   enrollments JourneyEnrollment[]
 
+  documents CustomerDocument[]
+
   // INDEXES (put here at bottom)
   @@index([ContactNumber])
   @@index([createdAt])
@@ -1874,8 +1891,32 @@ model GoogleDriveCredential {
   @@index([adminId])
 }
 
-enum GDriveStatus {
-  CONNECTED
-  DISCONNECTED
-  REVOKED
+model CustomerDocument {
+  id String @id @default(uuid())
+
+  // Relation to Customer (optional so you can also support general KB docs later if needed)
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  // Admin who uploaded the file (and whose Google Drive holds it)
+  uploadedById String
+  uploadedBy   Admin  @relation("AdminUploadedDocuments", fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  // File & Google Drive Metadata
+  fileName       String
+  mimeType       String
+  fileSize       Int?
+  driveFileId    String  @unique
+  webViewLink    String? @db.Text
+  webContentLink String? @db.Text
+
+  // Future-proofing for RAG indexing
+  ragStatus RagStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([uploadedById])
+  @@index([createdAt])
 }
