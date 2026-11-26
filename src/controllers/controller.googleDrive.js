@@ -352,3 +352,48 @@ export const deleteCustomerDocument = async (req, res, next) => {
     fail(err, next);
   }
 };
+
+
+
+// GET /api/gdrive/documents/:id/stream?download=true
+export const streamCustomerDocument = async (req, res, next) => {
+  try {
+    const doc = await prisma.customerDocument.findFirst({
+      where: {
+        id: req.params.id,
+        ...(!seesAll(req.admin) && { uploadedById: req.admin.id }),
+      },
+    });
+
+    if (!doc) {
+      return next(new ApiError(404, "Document not found"));
+    }
+
+    const { drive } = await getDriveClientForAdmin(doc.uploadedById);
+
+    const driveRes = await drive.files.get(
+      { fileId: doc.driveFileId, alt: "media" },
+      { responseType: "stream" }
+    );
+
+    const isDownload = req.query.download === "true";
+    const safeName = encodeURIComponent(doc.fileName);
+
+    res.setHeader("Content-Type", doc.mimeType || "application/octet-stream");
+    res.setHeader(
+      "Content-Disposition",
+      `${isDownload ? "attachment" : "inline"}; filename*=UTF-8''${safeName}`
+    );
+
+    driveRes.data.on("error", (streamErr) => {
+      console.error("[GDrive Stream Error]:", streamErr.message);
+      if (!res.headersSent) {
+        next(new ApiError(500, "Failed to stream document from Google Drive"));
+      }
+    });
+
+    driveRes.data.pipe(res);
+  } catch (err) {
+    fail(err, next);
+  }
+};

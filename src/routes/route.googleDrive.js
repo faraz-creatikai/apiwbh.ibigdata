@@ -8,6 +8,7 @@ import {
   uploadCustomerDocument,
   getCustomerDocuments,
   deleteCustomerDocument,
+  streamCustomerDocument,
 } from "../controllers/controller.googleDrive.js";
 import { protectRoute } from "../middlewares/auth.js";
 import upload, { gdriveUpload } from "../config/multer.js";
@@ -29,5 +30,6 @@ gDriveRoutes.delete("/disconnect", disconnectGDrive);
 gDriveRoutes.post("/documents", gdriveUpload.single("file"), uploadCustomerDocument);
 gDriveRoutes.get("/documents", getCustomerDocuments);
 gDriveRoutes.delete("/documents/:id", deleteCustomerDocument);
+gDriveRoutes.get("/documents/:id/stream", streamCustomerDocument);
 
 export default gDriveRoutes;
