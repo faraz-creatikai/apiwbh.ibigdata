@@ -89,6 +89,9 @@ model Admin {
   createdJourneys              Journey[]                     @relation("JourneyCreator")
   journeyAiProviderCredentials JourneyAIProviderCredential[]
 
+  // Google Drive Integration
+  gDriveCredential GoogleDriveCredential?
+
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   scheduledPosts ScheduledPost[]
@@ -1846,4 +1849,33 @@ model UserSession {
   @@index([adminId, loginAt])
   @@index([isOnline])
   @@index([clientId, loginAt])
+}
+
+// G Drive connection
+
+model GoogleDriveCredential {
+  id String @id @default(uuid())
+
+  // 1-to-1 relation with Admin
+  adminId String @unique
+  admin   Admin  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  // Auth Data
+  googleEmail  String? // The specific Google account they authenticated with
+  accessToken  String  @db.Text
+  refreshToken String? @db.Text // Critical: Google only sends this on the very first authorization
+  expiryDate   BigInt? // Token expiry timestamp in milliseconds
+
+  status GDriveStatus @default(CONNECTED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([adminId])
+}
+
+enum GDriveStatus {
+  CONNECTED
+  DISCONNECTED
+  REVOKED
 }
