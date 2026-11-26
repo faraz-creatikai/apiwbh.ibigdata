@@ -7,6 +7,7 @@ import fs from "fs";
 import { EmailCampaignAgent } from "../ai/agent.js";
 import { toWaNumber } from "../utils/phone.js";
 import { getCustomerAccessFilter } from "./controller.customer.js";
+import { custom } from "zod";
 
 const prisma = new PrismaClient();
 
@@ -18,10 +19,15 @@ export function replacePlaceholders(str, customer) {
   if (!str) return str;
   const map = {
     Name: customer.customerName || "",
-    City: customer.City || "",
     Campaign: customer.Campaign || "",
+    CustomerType:customer.CustomerType || "",
     ContactNumber: customer.ContactNumber || "",
     Email: customer.Email || "",
+    City: customer.City || "",
+    Location: customer.Location || "",
+    SubLocation: customer.SubLocationn || "",
+    URL: customer.URL || "",
+    Description: customer.Description || ""
   };
   let out = str;
   for (const [key, val] of Object.entries(map)) {
