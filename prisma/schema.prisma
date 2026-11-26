@@ -1902,6 +1902,10 @@ model CustomerDocument {
   uploadedById String
   uploadedBy   Admin  @relation("AdminUploadedDocuments", fields: [uploadedById], references: [id], onDelete: Cascade)
 
+  // Document Metadata
+  title    String @default("")
+  category String @default("General")
+
   // File & Google Drive Metadata
   fileName       String
   mimeType       String

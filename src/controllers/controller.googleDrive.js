@@ -196,12 +196,13 @@ async function getOrCreateCrmFolder(drive) {
   return createRes.data.id;
 }
 
+
 // POST /api/gdrive/documents
-// Expects multipart/form-data with field "file" and body field "customerId"
+// Expects multipart/form-data with field "file" and body fields "customerId", "title", "category"
 export const uploadCustomerDocument = async (req, res, next) => {
   try {
     const file = req.file;
-    const { customerId } = req.body;
+    const { customerId, title, category } = req.body;
 
     if (!file) {
       return next(new ApiError(400, "Please upload a file"));
@@ -209,6 +210,9 @@ export const uploadCustomerDocument = async (req, res, next) => {
     if (!customerId) {
       return next(new ApiError(400, "customerId is required"));
     }
+
+    const cleanTitle = String(title || "").trim() || file.originalname;
+    const cleanCategory = String(category || "").trim() || "General";
 
     // Verify the customer exists and this admin has access to them
     const access = await getCustomerAccessFilter(req.admin);
@@ -225,7 +229,6 @@ export const uploadCustomerDocument = async (req, res, next) => {
     const { drive } = await getDriveClientForAdmin(req.admin.id);
     const folderId = await getOrCreateCrmFolder(drive);
 
-    // Handle both memoryStorage (file.buffer) and diskStorage (file.path)
     const fileStream = file.buffer
       ? Readable.from(file.buffer)
       : fs.createReadStream(file.path);
@@ -244,7 +247,6 @@ export const uploadCustomerDocument = async (req, res, next) => {
         fields: "id, name, mimeType, size, webViewLink, webContentLink",
       });
     } finally {
-      // Remove local temp file if diskStorage was used
       if (file.path && fs.existsSync(file.path)) {
         fs.unlinkSync(file.path);
       }
@@ -256,6 +258,8 @@ export const uploadCustomerDocument = async (req, res, next) => {
       data: {
         customerId: customer.id,
         uploadedById: req.admin.id,
+        title: cleanTitle,
+        category: cleanCategory,
         fileName: uploaded.name || file.originalname,
         mimeType: uploaded.mimeType || file.mimetype,
         fileSize: uploaded.size ? Number(uploaded.size) : file.size,
@@ -276,21 +280,24 @@ export const uploadCustomerDocument = async (req, res, next) => {
   }
 };
 
-// GET /api/gdrive/documents?customerId=&search=&page=&limit=
+// GET /api/gdrive/documents?customerId=&category=&search=&page=&limit=
 export const getCustomerDocuments = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
     const customerId = String(req.query.customerId || "").trim();
+    const category = String(req.query.category || "").trim();
     const search = String(req.query.search || "").trim();
 
     const where = {
-      // Non-admins only see documents they uploaded or for customers they can access
       ...(!seesAll(req.admin) && { uploadedById: req.admin.id }),
       ...(customerId && { customerId }),
+      ...(category && { category }),
       ...(search && {
         OR: [
+          { title: { contains: search } },
           { fileName: { contains: search } },
+          { category: { contains: search } },
           { customer: { customerName: { contains: search } } },
         ],
       }),
