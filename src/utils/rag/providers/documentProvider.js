@@ -59,17 +59,21 @@ export async function fetchDocumentContext({
 
   let hits = response?.points || [];
 
-  // 3. Fallback: if specific customer(s) were targeted (e.g. "what is Faraz's document about?")
-  // and semantic score was below threshold, pull the opening chunks of their documents
+
+// 3. Fallback: pull opening chunks sorted by chunkIndex so Page 1 is always included. if specific customer(s) were targeted (e.g. "what is Faraz's document about?")
   if (hits.length === 0 && targetCustomerIds.length > 0) {
     const scrollRes = await qdrant.scroll(COLLECTION_NAME, {
       filter: {
         must: [{ key: "documentId", match: { any: allowedDocIds } }],
       },
-      limit: topK,
+      limit: 25,
       with_payload: true,
     });
-    hits = (scrollRes?.points || []).map((p) => ({ ...p, score: 0.5 }));
+
+    hits = (scrollRes?.points || [])
+      .sort((a, b) => (a.payload?.chunkIndex ?? 0) - (b.payload?.chunkIndex ?? 0))
+      .slice(0, topK)
+      .map((p) => ({ ...p, score: 0.5 }));
   }
 
   return hits

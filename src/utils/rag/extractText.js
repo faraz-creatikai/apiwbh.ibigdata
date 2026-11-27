@@ -26,13 +26,15 @@ async function ocrImageBuffers(buffers) {
 
 async function parsePdfBuffer(buffer) {
   let extracted = "";
+  let parsedSuccessfully = false;
 
-  // 1. Try fast native text extraction first
+  // 1. Try fast native text extraction first (pdf-parse v2 & v1)
   if (typeof pdfModule?.PDFParse === "function") {
     const parser = new pdfModule.PDFParse({ data: new Uint8Array(buffer) });
     try {
       const result = await parser.getText();
       extracted = result?.text || "";
+      parsedSuccessfully = true;
     } finally {
       await parser.destroy?.();
     }
@@ -41,7 +43,12 @@ async function parsePdfBuffer(buffer) {
     if (typeof fn === "function") {
       const parsed = await fn(buffer);
       extracted = parsed?.text || "";
+      parsedSuccessfully = true;
     }
+  }
+
+  if (!parsedSuccessfully) {
+    throw new Error("Unsupported pdf-parse module export");
   }
 
   const meaningfulText = extracted.replace(/--\s*\d+\s*of\s*\d+\s*--/gi, "").trim();
@@ -77,7 +84,7 @@ export async function extractTextFromBuffer(buffer, mimeType = "", fileName = ""
     mime.startsWith("image/") ||
     ["png", "jpg", "jpeg", "webp"].includes(ext)
   ) {
-    return await ocrImageInputs([buffer]);
+    return await ocrImageBuffers([buffer]);
   }
 
   if (
