@@ -1924,3 +1924,6 @@ model CustomerDocument {
   @@index([uploadedById])
   @@index([createdAt])
 }
+
+
+
