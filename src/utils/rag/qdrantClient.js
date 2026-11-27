@@ -74,3 +74,49 @@ export async function deleteDocumentVectors(documentId) {
     throw err;
   }
 }
+
+export async function deleteCustomerVectors(customerId) {
+  if (!customerId) return;
+
+  await ensureQdrantCollection();
+
+  try {
+    const res = await qdrant.delete(COLLECTION_NAME, {
+      filter: {
+        must: [{ key: "customerId", match: { value: String(customerId) } }],
+      },
+      wait: true,
+    });
+    console.log(`[Qdrant] Deleted vectors for customer ${customerId}:`, res);
+    return res;
+  } catch (err) {
+    const detail = err?.data?.status?.error || err?.message || err;
+    console.error(`[Qdrant Delete Error] (customer ${customerId}):`, detail);
+    throw err;
+  }
+}
+
+export async function deleteCustomersVectors(customerIds) {
+  const ids = (Array.isArray(customerIds) ? customerIds : [customerIds])
+    .filter(Boolean)
+    .map(String);
+
+  if (ids.length === 0) return;
+
+  await ensureQdrantCollection();
+
+  try {
+    const res = await qdrant.delete(COLLECTION_NAME, {
+      filter: {
+        must: [{ key: "customerId", match: { any: ids } }],
+      },
+      wait: true,
+    });
+    console.log(`[Qdrant] Deleted vectors for ${ids.length} customer(s):`, res);
+    return res;
+  } catch (err) {
+    const detail = err?.data?.status?.error || err?.message || err;
+    console.error(`[Qdrant Delete Error] (customers):`, detail);
+    throw err;
+  }
+}

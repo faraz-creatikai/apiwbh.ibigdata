@@ -13,6 +13,7 @@ import { notifyCustomerCreated } from "../jobs/notification/notificationEvents.j
 import { diffFields, logActivity } from "../utils/activityLogger.js";
 import { cleanNationalNumber, DEFAULT_COUNTRY_CODE } from "../utils/phone.js";
 import { fireJourneyEvent } from "../jobs/journey/journeyTrigger.js";
+import { cleanupCustomerDocuments } from "../utils/google/cleanupCustomerDocuments.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -2018,6 +2019,8 @@ export const deleteCustomer = async (req, res, next) => {
 
     await Promise.allSettled(deletions);
 
+    await cleanupCustomerDocuments(id);
+
     await prisma.customer.delete({ where: { id } });
 
     logActivity({
@@ -2359,6 +2362,9 @@ export const deleteAllCustomers = async (req, res, next) => {
     }
 
     await Promise.allSettled(deletions);
+
+    const targetCustomerIds = customersToDelete.map((c) => c.id);
+    await cleanupCustomerDocuments(targetCustomerIds);
 
     // ======================================================
     // ✔ CORRECT FIX — delete Followups only
