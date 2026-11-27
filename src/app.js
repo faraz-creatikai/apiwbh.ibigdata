@@ -58,6 +58,7 @@ import outreachCampaignRoute from "./routes/route.outreachCampaign.js";
 import channelTrackingRoutes from "./routes/route.channelTracking.js";
 import journeyRoute from "./routes/route.journey.js";
 import gDriveRoutes from "./routes/route.googleDrive.js";
+import ragRoutes from "./routes/route.rag.js";
 
 const app = express();
 app.use(cookieParser());
@@ -77,6 +78,7 @@ app.use("/api/channel-tracking", channelTrackingRoutes);
 // Routes
 app.use("/api/journey",journeyRoute);
 app.use("/api/gdrive", gDriveRoutes);
+app.use("/api/rag", ragRoutes);
 app.use("/api/brand", brandRoutes);
 app.use("/api/sarvam", sarvamCallingRoutes);
 app.use("/api/user", requestUserRoutes);

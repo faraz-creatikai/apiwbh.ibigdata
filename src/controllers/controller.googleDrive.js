@@ -9,7 +9,7 @@ import { clientName, clientUrl } from "../config/cors-origins.js";
 import { Readable } from "stream";
 import { getCustomerAccessFilter } from "./controller.customer.js";
 import fs from "fs";
-import { indexDocument } from "../utils/rag/ragService.js";
+import { askKnowledgeBase, indexDocument } from "../utils/rag/ragService.js";
 import { deleteDocumentVectors } from "../utils/rag/qdrantClient.js";
 
 
@@ -498,3 +498,5 @@ export const streamCustomerDocument = async (req, res, next) => {
         fail(err, next);
     }
 };
+
+
