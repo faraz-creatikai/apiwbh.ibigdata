@@ -56,10 +56,21 @@ export async function ensureQdrantCollection() {
 
 export async function deleteDocumentVectors(documentId) {
   if (!documentId) return;
-  await qdrant.delete(COLLECTION_NAME, {
-    filter: {
-      must: [{ key: "documentId", match: { value: documentId } }],
-    },
-    wait: true,
-  });
+
+  await ensureQdrantCollection();
+
+  try {
+    const res = await qdrant.delete(COLLECTION_NAME, {
+      filter: {
+        must: [{ key: "documentId", match: { value: String(documentId) } }],
+      },
+      wait: true,
+    });
+    console.log(`[Qdrant] Deleted vectors for doc ${documentId} in ${COLLECTION_NAME}:`, res);
+    return res;
+  } catch (err) {
+    const detail = err?.data?.status?.error || err?.message || err;
+    console.error(`[Qdrant Delete Error] (${COLLECTION_NAME}, doc ${documentId}):`, detail);
+    throw err;
+  }
 }
