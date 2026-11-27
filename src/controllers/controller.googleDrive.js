@@ -94,6 +94,7 @@ export const handleGDriveCallback = async (req, res) => {
 };
 
 // GET /api/gdrive/status
+// GET /api/gdrive/status
 export const getGDriveStatus = async (req, res, next) => {
   try {
     const cred = await prisma.googleDriveCredential.findUnique({
@@ -101,17 +102,100 @@ export const getGDriveStatus = async (req, res, next) => {
       select: {
         googleEmail: true,
         status: true,
+        createdAt: true,
         updatedAt: true,
       },
     });
 
+    if (!cred || cred.status !== "CONNECTED") {
+      return res.json({
+        success: true,
+        data: {
+          connected: false,
+          status: cred?.status || "DISCONNECTED",
+          googleEmail: cred?.googleEmail || null,
+          connectedAt: null,
+          updatedAt: cred?.updatedAt || null,
+          account: null,
+          storage: null,
+          crmStats: null,
+          tokenError: false,
+        },
+      });
+    }
+
+    // Fetch CRM-specific document stats for this admin
+    const crmAgg = await prisma.customerDocument.aggregate({
+      where: { uploadedById: req.admin.id },
+      _count: { id: true },
+      _sum: { fileSize: true },
+    });
+
+    const crmStats = {
+      documentCount: crmAgg._count.id || 0,
+      totalBytes: crmAgg._sum.fileSize || 0,
+      folderName: "CRM_Documents",
+    };
+
+    let account = null;
+    let storage = null;
+    let tokenError = false;
+
+    try {
+      const { drive } = await getDriveClientForAdmin(req.admin.id);
+      const aboutRes = await drive.about.get({
+        fields:
+          "user(displayName,emailAddress,photoLink),storageQuota(limit,usage,usageInDrive,usageInDriveTrash)",
+      });
+
+      const user = aboutRes.data.user;
+      const quota = aboutRes.data.storageQuota;
+
+      if (user) {
+        account = {
+          displayName: user.displayName || null,
+          email: user.emailAddress || cred.googleEmail || null,
+          photoUrl: user.photoLink || null,
+        };
+      }
+
+      if (quota) {
+        const limit = quota.limit ? Number(quota.limit) : null; // null = Unlimited Workspace plan
+        const usage = Number(quota.usage || 0);
+        const usageInDrive = Number(quota.usageInDrive || 0);
+        const usageInTrash = Number(quota.usageInDriveTrash || 0);
+        const remaining = limit !== null ? Math.max(0, limit - usage) : null;
+        const percentUsed =
+          limit && limit > 0
+            ? Math.min(100, Number(((usage / limit) * 100).toFixed(1)))
+            : null;
+
+        storage = {
+          limit,
+          usage,
+          usageInDrive,
+          usageInTrash,
+          remaining,
+          percentUsed,
+        };
+      }
+    } catch (driveErr) {
+      console.warn("[GDrive] Failed to fetch Drive about/quota:", driveErr.message);
+      tokenError = true;
+    }
+
     res.json({
       success: true,
       data: {
-        connected: cred?.status === "CONNECTED",
-        status: cred?.status || "DISCONNECTED",
-        googleEmail: cred?.googleEmail || null,
-        updatedAt: cred?.updatedAt || null,
+        connected: true,
+        status: cred.status,
+        googleEmail: account?.email || cred.googleEmail || null,
+        connectedAt: cred.createdAt,
+        updatedAt: cred.updatedAt,
+        account,
+        storage,
+        crmStats,
+        tokenError,
       },
     });
   } catch (err) {
