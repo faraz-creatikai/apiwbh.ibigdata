@@ -1,23 +1,40 @@
-// utils/rag/extractText.js
 import { createRequire } from "module";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 
-// createRequire avoids pdf-parse's known ESM import quirk
 const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
+const pdfModule = require("pdf-parse");
 
-export async function extractTextFromBuffer(buffer, mimeType = "", fileName = "") {
-  const mime = mimeType.toLowerCase();
-  const ext = fileName.split(".").pop()?.toLowerCase() || "";
-
-  // 1. PDF
-  if (mime === "application/pdf" || ext === "pdf") {
-    const parsed = await pdfParse(buffer);
-    return parsed.text || "";
+async function parsePdfBuffer(buffer) {
+  // pdf-parse v2+ (class-based API)
+  if (typeof pdfModule?.PDFParse === "function") {
+    const parser = new pdfModule.PDFParse({ data: new Uint8Array(buffer) });
+    try {
+      const result = await parser.getText();
+      return result?.text || "";
+    } finally {
+      await parser.destroy?.();
+    }
   }
 
-  // 2. Word (.docx)
+  // pdf-parse v1 fallback (function-based API)
+  const fn = typeof pdfModule === "function" ? pdfModule : pdfModule?.default;
+  if (typeof fn === "function") {
+    const parsed = await fn(buffer);
+    return parsed?.text || "";
+  }
+
+  throw new Error("Unsupported pdf-parse module export");
+}
+
+export async function extractTextFromBuffer(buffer, mimeType = "", fileName = "") {
+  const mime = String(mimeType || "").toLowerCase();
+  const ext = String(fileName || "").split(".").pop()?.toLowerCase() || "";
+
+  if (mime === "application/pdf" || ext === "pdf") {
+    return await parsePdfBuffer(buffer);
+  }
+
   if (
     mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
     ext === "docx"
@@ -26,7 +43,6 @@ export async function extractTextFromBuffer(buffer, mimeType = "", fileName = ""
     return result.value || "";
   }
 
-  // 3. Excel (.xlsx, .xls)
   if (
     mime.includes("spreadsheet") ||
     mime.includes("excel") ||
@@ -40,7 +56,6 @@ export async function extractTextFromBuffer(buffer, mimeType = "", fileName = ""
     }).join("\n\n");
   }
 
-  // 4. Plain Text / CSV / JSON / Markdown
   if (mime.startsWith("text/") || ["txt", "csv", "md", "json"].includes(ext)) {
     return buffer.toString("utf-8");
   }
