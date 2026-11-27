@@ -2,7 +2,7 @@ import { createRequire } from "module";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import { createWorker } from "tesseract.js";
-import { pdf } from "pdf-to-img";
+import { renderPageAsImage, getDocumentProxy } from "unpdf";
 
 const require = createRequire(import.meta.url);
 const pdfModule = require("pdf-parse");
@@ -44,18 +44,22 @@ async function parsePdfBuffer(buffer) {
     }
   }
 
-  // Strip page markers like "-- 1 of 6 --" to check if real text exists
   const meaningfulText = extracted.replace(/--\s*\d+\s*of\s*\d+\s*--/gi, "").trim();
   if (meaningfulText.length >= 40) {
     return extracted;
   }
 
-  // 2. Scanned PDF detected -> render pages to images and run local OCR (up to 15 pages)
+  // 2. Scanned PDF fallback -> render pages purely in Node via unpdf + @napi-rs/canvas
+  const pdfDoc = await getDocumentProxy(new Uint8Array(buffer));
+  const totalPages = Math.min(pdfDoc.numPages || 1, 15);
   const pageImages = [];
-  const document = await pdf(buffer, { scale: 2 });
-  for await (const imageBuffer of document) {
-    pageImages.push(imageBuffer);
-    if (pageImages.length >= 15) break;
+
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    const arrayBuf = await renderPageAsImage(pdfDoc, pageNum, {
+      canvasImport: () => import("@napi-rs/canvas"),
+      scale: 2,
+    });
+    pageImages.push(Buffer.from(arrayBuf));
   }
 
   return await ocrImageBuffers(pageImages);
@@ -73,7 +77,7 @@ export async function extractTextFromBuffer(buffer, mimeType = "", fileName = ""
     mime.startsWith("image/") ||
     ["png", "jpg", "jpeg", "webp"].includes(ext)
   ) {
-    return await ocrImageBuffers([buffer]);
+    return await ocrImageInputs([buffer]);
   }
 
   if (
