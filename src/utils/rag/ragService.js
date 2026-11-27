@@ -5,8 +5,9 @@ import { qdrant, COLLECTION_NAME, ensureQdrantCollection, deleteDocumentVectors 
 import { extractTextFromBuffer } from "./extractText.js";
 import { chunkText } from "./chunker.js";
 import { generateEmbedding } from "./embedder.js";
-import { getDynamicAIContext } from "../aiClientFactory.js";
-import { executeDynamicPrompt, safeJsonParse } from "../aiHelpers.js"; // <-- update to your actual file path
+
+import { getDynamicAIContext } from "../../config/aiClientFactory.js";
+import { executeDynamicPrompt, safeJsonParse } from "../../ai/agent.js";
 
 export async function indexDocument(documentId) {
   const doc = await prisma.customerDocument.findUnique({

@@ -1,5 +1,5 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
-import { clientName } from "../../config/cors-origins";
+import { clientName } from "../../config/cors-origins.js";
 
 export const COLLECTION_NAME = `${clientName}_knowledge_base`;
 
