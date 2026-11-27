@@ -175,21 +175,35 @@ export async function askKnowledgeBase({
   });
 
   // 2. Execute enabled context providers in parallel
-  const [docMatches, customerResult] = await Promise.all([
-    plan.needDocs
-      ? fetchDocumentContext({ admin, query, customerId, category, topK: 5 })
-      : Promise.resolve([]),
-    plan.needCustomers
-      ? fetchCustomerContext({
-          admin,
-          customerId,
-          filters: plan.customerFilters,
-          limit: 15,
-        })
-      : Promise.resolve({ totalMatching: 0, customers: [] }),
-  ]);
+// 2A. Fetch matching customers first so their IDs can scope document search
+  const customerResult = plan.needCustomers
+    ? await fetchCustomerContext({
+        admin,
+        customerId,
+        filters: plan.customerFilters,
+        limit: 15,
+      })
+    : { totalMatching: 0, customers: [] };
 
   const customers = customerResult.customers || [];
+
+  // If no customer was pre-selected in UI, pass matched customer IDs (when narrow, <= 5)
+  const inferredCustomerIds =
+    !customerId && customers.length > 0 && customers.length <= 5
+      ? customers.map((c) => c.id)
+      : [];
+
+  // 2B. Fetch relevant document chunks
+  const docMatches = plan.needDocs
+    ? await fetchDocumentContext({
+        admin,
+        query,
+        customerId,
+        customerIds: inferredCustomerIds,
+        category,
+        topK: 5,
+      })
+    : [];
 
   if (docMatches.length === 0 && customers.length === 0) {
     return {
