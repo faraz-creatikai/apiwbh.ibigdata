@@ -18,9 +18,9 @@ export const ALLOWED_ORIGINS = [
   "https://autoflow-dj.vercel.app"
 ];
 
-export const clientUrl = "https://wbh.ibigdata.in";
-export const serverUrl = "https://apiwbh.ibigdata.in";
+export const clientUrl = "https://domain.ibigdata.in";
+export const serverUrl = "https://apidomain.ibigdata.in";
 
-export const clientName = "wbh";
+export const clientName = "domain";
 
 
